@@ -247,7 +247,8 @@ data/
     ├── Pavia_centre.mat      
     ├── Pavia_centre_gt.mat       
     └── README.txt
-  
+```
+
 ### Train/Val/Test Splits
 
 **CAVE Dataset (32 scenes):**
