@@ -211,6 +211,18 @@ total_parameters: 3,245,123
    - Spatial resolution: 1392×1040
    - Download: http://vision.seas.harvard.edu/hyperspec/
 
+3. **Chikusei Dataset**
+   - 1 large airborne hyperspectral scene
+   - 128 spectral bands (363–1018 nm)
+   - Spatial resolution: 2517×2335 
+   - Download: https://naotoyokoya.com/Download.html
+  
+4. **Chikusei Dataset**
+   - 1 airborne hyperspectral scene (urban area)
+   - 102 spectral bands
+   - Spatial resolution: ~1096×1096
+   - Download: https://www.ehu.eus/ccwintco/index.php/Hyperspectral_Remote_Sensing_Scenes
+
 ### Dataset Structure
 
 ```
@@ -221,12 +233,21 @@ data/
 │   ├── cd_ms.mat
 │   └── ... (32 scenes total)
 │
-└── Harvard/
-    ├── imgd1.mat
-    ├── imgd2.mat
-    └── ... (50 scenes total)
-```
-
+├── Harvard/
+│   ├── imgd1.mat
+│   ├── imgd2.mat
+│   └── ... (50 scenes total)
+│
+├── Chikusei/
+│   ├── Chikusei.mat            
+│   ├── Chikusei_gt.mat         
+│   └── README.txt                
+│
+└── PaviaCentre/
+    ├── Pavia_centre.mat      
+    ├── Pavia_centre_gt.mat       
+    └── README.txt
+  
 ### Train/Val/Test Splits
 
 **CAVE Dataset (32 scenes):**
