@@ -217,7 +217,7 @@ total_parameters: 3,245,123
    - Spatial resolution: 2517×2335 
    - Download: https://naotoyokoya.com/Download.html
   
-4. **Chikusei Dataset**
+4. **Pavia Centre Dataset**
    - 1 airborne hyperspectral scene (urban area)
    - 102 spectral bands
    - Spatial resolution: ~1096×1096
