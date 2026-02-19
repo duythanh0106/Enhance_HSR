@@ -14,15 +14,15 @@ class Config:
         # ============================================================
         # DATASET SETTINGS
         # ============================================================
-        self.dataset_type = 'CAVE'  # 'CAVE' hoặc 'Harvard'
-        self.data_root = './data/CAVE'  # Đường dẫn đến dataset
+        self.dataset_type = 'Harvard'  # 'CAVE' hoặc 'Harvard'
+        self.data_root = './data/Harvard'  # Đường dẫn đến dataset
         self.num_spectral_bands = 31  # Số bands (31 cho CAVE/Harvard)
         
         # ============================================================
         # MODEL SETTINGS
         # ============================================================
         self.model_name = 'ESSA_SSAM'  # 'ESSA_Original' hoặc 'ESSA_SSAM'
-        self.feature_dim = 128  # Số feature channels (64, 128, 256)
+        self.feature_dim = 64  # Số feature channels (64, 128, 256)
         self.upscale_factor = 4  # Upscale factor (2, 4, 8)
         
         # SSAM fusion mode (chỉ cho ESSA_SSAM)
@@ -32,8 +32,8 @@ class Config:
         # ============================================================
         # TRAINING SETTINGS
         # ============================================================
-        self.batch_size = 4  # Batch size (giảm nếu GPU bị OOM)
-        self.patch_size = 128  # Kích thước patch để crop (64, 128, 256)
+        self.batch_size = 1  # Batch size (giảm nếu GPU bị OOM)
+        self.patch_size = 64  # Kích thước patch để crop (64, 128, 256)
         self.num_epochs = 100  # Số epochs
         self.num_workers = 4  # Số workers cho DataLoader
         
@@ -99,7 +99,7 @@ class Config:
         # ============================================================
         # HARDWARE
         # ============================================================
-        self.device = 'cuda'  # 'cuda' hoặc 'cpu'
+        self.device = 'auto'  # 'auto', 'cuda', 'mps', 'cpu'
         self.mixed_precision = False  # Use AMP (Automatic Mixed Precision)
         self.seed = 42  # Random seed
     

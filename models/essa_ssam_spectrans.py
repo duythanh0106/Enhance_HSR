@@ -258,7 +258,7 @@ class ESSA_SSAM_SpecTrans(nn.Module):
     - Better overall quality (higher PSNR)
     """
     
-    def __init__(self, inch=31, dim=128, upscale=4, fusion_mode='sequential', 
+    def __init__(self, dataset=None, inch=None, dim=128, upscale=4, fusion_mode='sequential', 
                  use_spectrans=True, spectrans_depth=2):
         """
         Args:
@@ -270,6 +270,13 @@ class ESSA_SSAM_SpecTrans(nn.Module):
             spectrans_depth: Number of Spectral Transformer blocks
         """
         super(ESSA_SSAM_SpecTrans, self).__init__()
+        
+        # -------- AUTO DETECT NUMBER OF BANDS --------
+        if dataset is not None:
+            inch = dataset.num_bands
+
+        if inch is None:
+            raise ValueError("You must provide either dataset or inch.")
         
         self.inch = inch
         self.dim = dim
@@ -305,6 +312,10 @@ class ESSA_SSAM_SpecTrans(nn.Module):
         x = self.conv_last(x)
         return x
     
+    @classmethod
+    def from_dataset(cls, dataset, **kwargs):
+        return cls(dataset=dataset, **kwargs)
+    
     def get_model_info(self):
         """Trả về thông tin model để report trong khóa luận"""
         num_params = sum(p.numel() for p in self.parameters())
@@ -319,6 +330,7 @@ class ESSA_SSAM_SpecTrans(nn.Module):
             'total_parameters': f'{num_params:,}',
             'trainable_parameters': sum(p.numel() for p in self.parameters() if p.requires_grad)
         }
+
 
 
 # Test code

@@ -170,7 +170,7 @@ def calculate_ergas(img1, img2, scale=4):
     # Calculate ERGAS
     ergas = 100.0 / scale * math.sqrt(sum_squared_relative_error / C)
     
-    return ergas
+    return float(ergas)
 
 
 class MetricsCalculator:

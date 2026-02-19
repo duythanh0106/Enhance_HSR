@@ -7,7 +7,7 @@ import os
 import argparse
 import torch
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 import json
 import numpy as np
@@ -16,6 +16,7 @@ from config import Config, ConfigBaseline, ConfigProposed, ConfigAblation, Confi
 from data.dataset import HyperspectralDataset
 from utils.metrics import MetricsCalculator
 from utils.losses import L1Loss, L2Loss, CombinedLoss, AdaptiveCombinedLoss
+from utils.device import resolve_device
 
 # Import models
 from models.essa_original import ESSA
@@ -28,19 +29,23 @@ class Trainer:
     
     def __init__(self, config):
         self.config = config
-        self.device = torch.device(config.device if torch.cuda.is_available() else 'cpu')
-        
+
+        self.device = resolve_device(config.device)
+        self.use_amp = bool(config.mixed_precision and self.device.type == 'cuda')
+        self.scaler = torch.amp.GradScaler('cuda', enabled=self.use_amp)
+
+    
         # Set random seed
         self.set_seed(config.seed)
         
         # Create directories
         config.create_dirs()
         
-        # Build model
-        self.model = self.build_model()
-        
         # Build data loaders
         self.train_loader, self.val_loader = self.build_dataloaders()
+
+        # Build model (after data loader so num_spectral_bands is auto-detected)
+        self.model = self.build_model()
         
         # Build optimizer and scheduler
         self.optimizer = self.build_optimizer()
@@ -65,7 +70,10 @@ class Trainer:
     def set_seed(self, seed):
         """Set random seed for reproducibility"""
         torch.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
+        
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+
         np.random.seed(seed)
     
     def build_model(self):
@@ -78,7 +86,7 @@ class Trainer:
             )
         elif self.config.model_name == 'ESSA_SSAM':
             model = ESSA_SSAM(
-                inch=self.config.num_spectral_bands,
+                inch=self.config.num_spectral_bands, 
                 dim=self.config.feature_dim,
                 upscale=self.config.upscale_factor,
                 fusion_mode=self.config.fusion_mode
@@ -101,50 +109,66 @@ class Trainer:
         num_params = sum(p.numel() for p in model.parameters())
         print(f"Model: {self.config.model_name}")
         print(f"Parameters: {num_params:,}")
+        print(f"Using device: {self.device}")
         
         return model
     
     def build_dataloaders(self):
-        """Build train and validation dataloaders with FIXED splits"""
-        # Training dataset (FIXED split)
-        train_dataset = HyperspectralDataset(
+        """Build train and validation dataloaders using random split"""
+
+        # Load full dataset (NO split argument)
+        full_dataset = HyperspectralDataset(
             data_root=self.config.data_root,
-            dataset_type=self.config.dataset_type,
-            split='train',  # ⭐ FIXED train split
             patch_size=self.config.patch_size,
             upscale=self.config.upscale_factor,
             augment=self.config.use_augmentation
         )
-        
-        # Validation dataset (FIXED split)
-        val_dataset = HyperspectralDataset(
-            data_root=self.config.data_root,
-            dataset_type=self.config.dataset_type,
-            split='val',  # ⭐ FIXED val split
-            patch_size=self.config.patch_size,
-            upscale=self.config.upscale_factor,
-            augment=False  # NO augmentation for validation
+
+        # Sync config with detected number of spectral bands
+        if self.config.num_spectral_bands != full_dataset.num_bands:
+            print(
+                f"Updating num_spectral_bands: "
+                f"{self.config.num_spectral_bands} -> {full_dataset.num_bands} (auto-detected)"
+            )
+        self.config.num_spectral_bands = full_dataset.num_bands
+
+        # Split ratio (80% train / 20% val)
+        total_size = len(full_dataset)
+        train_size = int(0.8 * total_size)
+        val_size = total_size - train_size
+
+        train_dataset, val_dataset = random_split(
+            full_dataset,
+            [train_size, val_size]
         )
-        
-        # Create loaders
+
+        num_workers = max(0, int(self.config.num_workers))
+        pin_memory = self.device.type == 'cuda'
+        loader_kwargs = {
+            'num_workers': num_workers,
+            'pin_memory': pin_memory
+        }
+        if num_workers > 0:
+            loader_kwargs['persistent_workers'] = True
+
         train_loader = DataLoader(
             train_dataset,
             batch_size=self.config.batch_size,
             shuffle=True,
-            num_workers=self.config.num_workers,
-            pin_memory=True
+            **loader_kwargs
         )
-        
+
         val_loader = DataLoader(
             val_dataset,
             batch_size=self.config.batch_size,
             shuffle=False,
-            num_workers=self.config.num_workers,
-            pin_memory=True
+            **loader_kwargs
         )
-        
-        print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
-        
+
+        print(f"Total samples: {total_size}")
+        print(f"Train samples: {train_size}, Val samples: {val_size}")
+        print(f"DataLoader workers: {num_workers}, pin_memory: {pin_memory}")
+
         return train_loader, val_loader
     
     def build_optimizer(self):
@@ -221,29 +245,35 @@ class Trainer:
         pbar = tqdm(self.train_loader, desc=f'Epoch {epoch}/{self.config.num_epochs}')
         
         for i, (lr, hr) in enumerate(pbar):
-            lr = lr.to(self.device)
-            hr = hr.to(self.device)
+            lr = lr.to(self.device, non_blocking=self.device.type == 'cuda')
+            hr = hr.to(self.device, non_blocking=self.device.type == 'cuda')
             
             # Forward pass
-            self.optimizer.zero_grad()
-            sr = self.model(lr)
+            self.optimizer.zero_grad(set_to_none=True)
+            with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=self.use_amp):
+                sr = self.model(lr)
             
-            # Compute loss
-            if self.config.loss_type in ['combined', 'adaptive']:
-                loss, loss_dict = self.criterion(sr, hr)
-                if i % self.config.log_interval == 0:
-                    pbar.set_postfix({
-                        'loss': f"{loss_dict['total']:.4f}",
-                        'l1': f"{loss_dict['l1']:.4f}",
-                        'sam': f"{loss_dict['sam']:.4f}"
-                    })
-            else:
-                loss = self.criterion(sr, hr)
-                pbar.set_postfix({'loss': f"{loss.item():.4f}"})
+                # Compute loss
+                if self.config.loss_type in ['combined', 'adaptive']:
+                    loss, loss_dict = self.criterion(sr, hr)
+                    if i % self.config.log_interval == 0:
+                        pbar.set_postfix({
+                            'loss': f"{loss_dict['total']:.4f}",
+                            'l1': f"{loss_dict['l1']:.4f}",
+                            'sam': f"{loss_dict['sam']:.4f}"
+                        })
+                else:
+                    loss = self.criterion(sr, hr)
+                    pbar.set_postfix({'loss': f"{loss.item():.4f}"})
             
             # Backward pass
-            loss.backward()
-            self.optimizer.step()
+            if self.use_amp:
+                self.scaler.scale(loss).backward()
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                loss.backward()
+                self.optimizer.step()
             
             epoch_loss += loss.item()
         
@@ -261,11 +291,12 @@ class Trainer:
         
         with torch.no_grad():
             for lr, hr in tqdm(self.val_loader, desc='Validating'):
-                lr = lr.to(self.device)
-                hr = hr.to(self.device)
-                
-                # Forward pass
-                sr = self.model(lr)
+                lr = lr.to(self.device, non_blocking=self.device.type == 'cuda')
+                hr = hr.to(self.device, non_blocking=self.device.type == 'cuda')
+
+                with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=self.use_amp):
+                    # Forward pass
+                    sr = self.model(lr)
                 
                 # Compute metrics
                 metrics = self.metrics_calculator.calculate_all(
@@ -360,9 +391,9 @@ class Trainer:
             
             # Update learning rate
             if self.scheduler:
-                if self.config.lr_scheduler == 'plateau':
+                if self.config.lr_scheduler == 'plateau' and epoch % self.config.validate_every == 0:
                     self.scheduler.step(val_metrics['PSNR'])
-                else:
+                elif self.config.lr_scheduler != 'plateau':
                     self.scheduler.step()
         
         print("\n" + "="*70)

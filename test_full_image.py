@@ -15,6 +15,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 import json
 from datetime import datetime
+import time
 
 from config import Config, ConfigBaseline, ConfigProposed, ConfigSpecTrans
 from data.dataset import HyperspectralTestDataset
@@ -22,9 +23,52 @@ from models.essa_original import ESSA
 from models.essa_improved import ESSA_SSAM
 from models.essa_ssam_spectrans import ESSA_SSAM_SpecTrans
 from utils.metrics import calculate_psnr, calculate_ssim, calculate_sam, calculate_ergas
+from utils.device import resolve_device
 
 
 @torch.no_grad()
+def forward_chop(model, x, scale, patch_size=64, overlap=16):
+    """
+    Sliding window inference để tránh OOM do Spectral Transformer
+    Attention có độ phức tạp O((H×W)^2) nên không thể chạy full ảnh lớn.
+
+    Args:
+        model: SR model
+        x: LR image tensor (1, C, H, W)
+        scale: Upscale factor
+        patch_size: kích thước patch LR
+        overlap: vùng overlap giữa patch để tránh seam
+
+    Returns:
+        sr: SR full image (1, C, H*scale, W*scale)
+    """
+
+    b, c, h, w = x.size()
+    stride = patch_size - overlap
+
+    h_idx = list(range(0, h - patch_size, stride)) + [h - patch_size]
+    w_idx = list(range(0, w - patch_size, stride)) + [w - patch_size]
+
+    sr = torch.zeros(b, c, h * scale, w * scale, device=x.device)
+    weight = torch.zeros_like(sr)
+
+    for i in h_idx:
+        for j in w_idx:
+            patch = x[:, :, i:i+patch_size, j:j+patch_size]
+            sr_patch = model(patch)
+
+            h_start = i * scale
+            w_start = j * scale
+            h_end = h_start + patch_size * scale
+            w_end = w_start + patch_size * scale
+
+            sr[:, :, h_start:h_end, w_start:w_end] += sr_patch
+            weight[:, :, h_start:h_end, w_start:w_end] += 1
+
+    sr /= weight
+    return sr
+
+
 def test_full_image(model, dataloader, scale, device, crop_border=True, save_dir=None):
     """
     Test model trên full images (không crop patches)
@@ -50,35 +94,47 @@ def test_full_image(model, dataloader, scale, device, crop_border=True, save_dir
     print("="*70)
 
     for idx, (lr, hr, filepath) in enumerate(tqdm(dataloader, desc='Testing')):
+
+        start_time = time.time()   # ⬅ bắt đầu đo thời gian
+
         lr = lr.to(device)   # (1, C, H, W)
         hr = hr.to(device)
         
-        # Forward pass
-        sr = model(lr)
+        # --- Sliding Window Inference ---
+        with torch.inference_mode():
+            sr = forward_chop(model, lr, scale, patch_size=32, overlap=8)
+
+        elapsed = time.time() - start_time   # ⬅ kết thúc đo
+
+        print(f"\n⏱ {os.path.basename(filepath[0])} time: {elapsed:.2f} seconds")
 
         # Crop border (theo paper ESSA)
         if crop_border and scale > 1:
             sr = sr[:, :, scale:-scale, scale:-scale]
             hr = hr[:, :, scale:-scale, scale:-scale]
 
-        # Clamp to [0, 1]
+        # Clamp to [0, 1]   
         sr = sr.clamp(0.0, 1.0)
         hr = hr.clamp(0.0, 1.0)
 
-        # Convert to numpy
-        sr_np = sr.squeeze(0).cpu().numpy()  # (C, H, W)
-        hr_np = hr.squeeze(0).cpu().numpy()
+        # Keep as tensor for metrics
+        sr_tensor = sr.squeeze(0).cpu()
+        hr_tensor = hr.squeeze(0).cpu()
 
-        # Calculate metrics
-        psnr = calculate_psnr(sr_np, hr_np, data_range=1.0)
-        ssim = calculate_ssim(sr_np, hr_np, data_range=1.0)
-        sam = calculate_sam(sr_np, hr_np)
-        ergas = calculate_ergas(hr_np, sr_np, scale=scale)
+        # Calculate metrics (using torch tensors)
+        psnr = calculate_psnr(sr_tensor, hr_tensor, data_range=1.0)
+        ssim = calculate_ssim(sr_tensor, hr_tensor, data_range=1.0)
+        sam = calculate_sam(sr_tensor, hr_tensor)
+        ergas = calculate_ergas(hr_tensor, sr_tensor, scale=scale)
 
         psnr_list.append(psnr)
         ssim_list.append(ssim)
         sam_list.append(sam)
         ergas_list.append(ergas)
+
+        # Convert to numpy ONLY for saving
+        sr_np = sr_tensor.numpy()
+        hr_np = hr_tensor.numpy()
         
         # Store per-image results
         image_name = os.path.basename(filepath[0])
@@ -194,9 +250,8 @@ def main():
     parser.add_argument('--config', type=str, default=None,
                        choices=['baseline', 'proposed', 'spectrans'],
                        help='Config preset (optional, will use checkpoint config if not provided)')
-    parser.add_argument('--dataset_type', type=str, default='CAVE',
-                       choices=['CAVE', 'Harvard'],
-                       help='Dataset type')
+    parser.add_argument('--dataset_type', type=str, default='custom',
+                       help='Dataset label for logging (free text, e.g. CAVE/Harvard/MyDataset)')
     parser.add_argument('--crop_border', action='store_true', default=True,
                        help='Crop border pixels (paper-style evaluation)')
     parser.add_argument('--save_images', action='store_true',
@@ -206,13 +261,9 @@ def main():
     
     args = parser.parse_args()
     
-    # Device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
-    
     # Load checkpoint
     print(f"\nLoading checkpoint: {args.checkpoint}")
-    checkpoint = torch.load(args.checkpoint, map_location=device)
+    checkpoint = torch.load(args.checkpoint, map_location='cpu')
     
     # Get config from checkpoint or use provided config
     if 'config' in checkpoint:
@@ -229,14 +280,15 @@ def main():
         print(f"Using config preset: {args.config}")
     else:
         raise ValueError("No config found in checkpoint and no --config provided")
+
+    device_pref = config.get('device', 'auto') if isinstance(config, dict) else 'auto'
+    device = resolve_device(device_pref)
+    print(f"Using device: {device}")
     
-    # Override data_root
     if isinstance(config, dict):
         upscale = config.get('upscale_factor', 4)
-        num_bands = config.get('num_spectral_bands', 31)
     else:
         upscale = config['upscale_factor']
-        num_bands = config['num_spectral_bands']
     
     # Print test info
     print("\n" + "="*70)
@@ -250,33 +302,49 @@ def main():
     print(f"Save images: {args.save_images}")
     print("="*70)
     
-    # Build model
-    model = build_model(config)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model = model.to(device)
-    
-    num_params = sum(p.numel() for p in model.parameters())
-    print(f"\nModel parameters: {num_params:,}")
-    print("✅ Model loaded successfully")
-    
     # Build test dataset (FULL IMAGE, FIXED TEST SPLIT)
     test_dataset = HyperspectralTestDataset(
         data_root=args.data_root,
-        dataset_type=args.dataset_type,
         split='test',  # ⭐ FIXED test split - NEVER seen during training
         upscale=upscale,
-        num_bands=num_bands
     )
+
+    detected_num_bands = test_dataset.num_bands
+    config_num_bands = config.get('num_spectral_bands') if isinstance(config, dict) else None
+    if config_num_bands != detected_num_bands:
+        print(
+            f"Updating num_spectral_bands: "
+            f"{config_num_bands} -> {detected_num_bands} (auto-detected)"
+        )
+        config['num_spectral_bands'] = detected_num_bands
+
+    #SAFEGUARD
+    if len(test_dataset) == 0:
+        raise ValueError(
+            f"No test images found!\n"
+            f"Data root: {args.data_root}\n"
+            f"Dataset type: {args.dataset_type}\n"
+            f"Expected split folder: 'test'"
+        )
     
     test_loader = DataLoader(
         test_dataset,
-        batch_size=1,  # IMPORTANT: Full image only
+        batch_size=1,
         shuffle=False,
         num_workers=0,
-        pin_memory=True
+        pin_memory=(device.type == "cuda")
     )
-    
+
     print(f"\nTest set: {len(test_dataset)} images")
+
+    # Build model after auto-detecting num_bands from dataset
+    model = build_model(config)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model = model.to(device)
+
+    num_params = sum(p.numel() for p in model.parameters())
+    print(f"\nModel parameters: {num_params:,}")
+    print("✅ Model loaded successfully")
     
     # Create output directory
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')

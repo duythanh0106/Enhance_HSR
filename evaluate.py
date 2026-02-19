@@ -17,18 +17,19 @@ from utils.metrics import MetricsCalculator
 from models.essa_original import ESSA
 from models.essa_improved import ESSA_SSAM
 from models.essa_ssam_spectrans import ESSA_SSAM_SpecTrans
+from utils.device import resolve_device
 
 
 class Evaluator:
     """Evaluator class để đánh giá model"""
     
-    def __init__(self, checkpoint_path, data_root, dataset_type='CAVE', 
+    def __init__(self, checkpoint_path, data_root, dataset_type='custom', 
                  save_results=True, save_images=True):
         """
         Args:
             checkpoint_path: Path to model checkpoint
             data_root: Path to test data
-            dataset_type: 'CAVE' or 'Harvard'
+            dataset_type: Dataset label for logging (free text)
             save_results: Whether to save results to JSON
             save_images: Whether to save reconstructed images
         """
@@ -38,20 +39,19 @@ class Evaluator:
         self.save_results = save_results
         self.save_images = save_images
         
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        
         # Load checkpoint
         print("Loading checkpoint...")
-        self.checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        self.checkpoint = torch.load(checkpoint_path, map_location='cpu')
         self.config = self.checkpoint.get('config', {})
-        
-        # Build model
-        self.model = self.build_model()
-        self.model.load_state_dict(self.checkpoint['model_state_dict'])
-        self.model.eval()
+        self.device = resolve_device(self.config.get('device', 'auto'))
         
         # Build dataset
         self.test_loader = self.build_dataloader()
+
+        # Build model (after dataset so num_bands can be auto-detected)
+        self.model = self.build_model()
+        self.model.load_state_dict(self.checkpoint['model_state_dict'])
+        self.model.eval()
         
         # Metrics calculator
         self.metrics_calculator = MetricsCalculator(data_range=1.0)
@@ -66,7 +66,7 @@ class Evaluator:
     def build_model(self):
         """Build model from checkpoint config"""
         model_name = self.config.get('model_name', 'ESSA_SSAM')
-        num_bands = self.config.get('num_spectral_bands', 31)
+        num_bands = getattr(self, 'num_bands_detected', self.config.get('num_spectral_bands', 31))
         feature_dim = self.config.get('feature_dim', 128)
         upscale = self.config.get('upscale_factor', 4)
         
@@ -106,14 +106,21 @@ class Evaluator:
     def build_dataloader(self):
         """Build test dataloader"""
         upscale = self.config.get('upscale_factor', 4)
-        num_bands = self.config.get('num_spectral_bands', 31)
         
         test_dataset = HyperspectralTestDataset(
             data_root=self.data_root,
-            dataset_type=self.dataset_type,
-            upscale=upscale,
-            num_bands=num_bands
+            split='test',
+            upscale=upscale
         )
+
+        self.num_bands_detected = test_dataset.num_bands
+        config_bands = self.config.get('num_spectral_bands')
+        if config_bands != self.num_bands_detected:
+            print(
+                f"Updating num_spectral_bands: "
+                f"{config_bands} -> {self.num_bands_detected} (auto-detected)"
+            )
+            self.config['num_spectral_bands'] = self.num_bands_detected
         
         test_loader = DataLoader(
             test_dataset,
@@ -250,7 +257,7 @@ class Evaluator:
             plt.close()
 
 
-def compare_models(checkpoint1, checkpoint2, data_root, dataset_type='CAVE'):
+def compare_models(checkpoint1, checkpoint2, data_root, dataset_type='custom'):
     """
     So sánh 2 models
     Useful cho ablation study hoặc so sánh baseline vs proposed
@@ -301,9 +308,8 @@ def main():
                        help='Path to model checkpoint')
     parser.add_argument('--data_root', type=str, required=True,
                        help='Path to test data')
-    parser.add_argument('--dataset_type', type=str, default='CAVE',
-                       choices=['CAVE', 'Harvard'],
-                       help='Dataset type')
+    parser.add_argument('--dataset_type', type=str, default='custom',
+                       help='Dataset label for logging (free text)')
     parser.add_argument('--save_images', action='store_true',
                        help='Save reconstructed images')
     parser.add_argument('--compare', type=str, default=None,

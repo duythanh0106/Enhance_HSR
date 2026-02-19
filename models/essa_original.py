@@ -171,9 +171,23 @@ class Upsample(nn.Sequential):
 class ESSA(nn.Module):
     """
     ESSA Original Model (Baseline)
+    Auto-compatible with HyperspectralDataset
     """
-    def __init__(self, inch, dim, upscale, **kwargs):
+
+    def __init__(self, dataset=None, inch=None, dim=128, upscale=4):
         super(ESSA, self).__init__()
+
+        # -------- AUTO DETECT --------
+        if dataset is not None:
+            inch = dataset.num_bands
+
+        if inch is None:
+            raise ValueError("You must provide either dataset or inch.")
+
+        self.inch = inch
+        self.dim = dim
+        self.upscale = upscale
+
         self.conv_first = nn.Conv2d(inch, dim, 3, 1, 1)
         self.blockup = blockup(dim=dim, upscale=upscale)
         self.conv_last = nn.Conv2d(dim, inch, 3, 1, 1)
@@ -184,16 +198,16 @@ class ESSA(nn.Module):
         x = self.conv_last(x)
         return x
 
+    @classmethod
+    def from_dataset(cls, dataset, **kwargs):
+        return cls(dataset=dataset, **kwargs)
 
-if __name__ == '__main__':
-    upscale = 4
-    height = 128
-    width = 128
-    model = ESSA(inch=31, dim=128, upscale=4)
-    print(model)
-    print(f"\nTotal parameters: {sum(p.numel() for p in model.parameters()):,}")
-    
-    x = torch.randn((1, 31, height, width))
-    x = model(x)
-    print(f"\nInput: [1, 31, {height}, {width}]")
-    print(f"Output: {list(x.shape)}")
+    def get_model_info(self):
+        num_params = sum(p.numel() for p in self.parameters())
+        return {
+            "model_name": "ESSA (Baseline)",
+            "input_channels": self.inch,
+            "feature_dim": self.dim,
+            "upscale_factor": self.upscale,
+            "total_parameters": f"{num_params:,}"
+        }

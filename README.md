@@ -213,11 +213,11 @@ total_parameters: 3,245,123
 
 3. **Chikusei Dataset**
    - 1 large airborne hyperspectral scene
-   - 128 spectral bands (363–1018 nm)
-   - Spatial resolution: 2517×2335 
+   - 128 spectral bands (363-1018 nm)
+   - Spatial resolution: 2517×2335
    - Download: https://naotoyokoya.com/Download.html
-  
-4. **Chikusei Dataset**
+
+4. **PaviaCentre Dataset**
    - 1 airborne hyperspectral scene (urban area)
    - 102 spectral bands
    - Spatial resolution: ~1096×1096
@@ -251,43 +251,54 @@ data/
 
 ### Train/Val/Test Splits
 
-**CAVE Dataset (32 scenes):**
-```
-Total: 32 scenes
-├─ Train: 25 scenes (78%) - Fixed
-├─ Val:   3 scenes  (9%)  - Fixed
-└─ Test:  4 scenes  (13%) - Fixed
-```
+Project hỗ trợ split tự động theo từng dataset:
+- `data/splits.py` tạo `split.json` theo tỷ lệ mặc định `train=0.8`, `val=0.1`, `test=0.1` (seed=42)
+- `train.py` huấn luyện từ tập `train` và tách tiếp `80/20` cho train/val nội bộ
+- `test_full_image.py` và `evaluate.py` dùng split `test`
 
-**Splits are FIXED** để đảm bảo reproducibility. Details trong `data/splits.py`.
-
-**Test set scenes (CAVE):**
-- face_ms
-- feathers_ms
-- flowers_ms
-- oil_painting_ms
-
-**⚠️ Important:** Test set KHÔNG BAO GIỜ được dùng trong training!
+**⚠️ Important:** Không dùng dữ liệu `test` để huấn luyện.
 
 ---
 
 ## 🎓 Training
 
-### Quick Start
+### Lệnh chuẩn
 
-**1. Train ESSA-SSAM-SpecTrans (Final Model - Recommended):**
+Nếu chưa activate venv, dùng `./.venv/bin/python` thay cho `python3`.
+
 ```bash
-python train.py --config spectrans --data_root ./data/CAVE
+python3 train.py --config spectrans --data_root <DATA_ROOT>
 ```
 
-**2. Train ESSA-SSAM (without Spectral Transformer):**
+`--config` hỗ trợ: `default`, `baseline`, `proposed`, `spectrans`, `lightweight`.
+
+### Train theo từng dataset
+
 ```bash
-python train.py --config proposed --data_root ./data/CAVE
+# CAVE
+python3 train.py --config spectrans --data_root ./data/CAVE
+
+# Harvard
+python3 train.py --config spectrans --data_root ./data/Harvard
+
+# Chikusei
+python3 train.py --config spectrans --data_root ./data/Chikusei
+
+# PaviaCentre
+python3 train.py --config spectrans --data_root ./data/PaviaCentre
 ```
 
-**3. Train ESSA Baseline:**
+### Train các biến thể model
+
 ```bash
-python train.py --config baseline --data_root ./data/CAVE
+# ESSA baseline
+python3 train.py --config baseline --data_root ./data/Harvard
+
+# ESSA + SSAM
+python3 train.py --config proposed --data_root ./data/Harvard
+
+# ESSA + SSAM + SpecTrans (recommended)
+python3 train.py --config spectrans --data_root ./data/Harvard
 ```
 
 ### Training Configs
@@ -355,7 +366,7 @@ checkpoints/
 ### Resume Training
 
 ```bash
-python train.py --resume ./checkpoints/ESSA_SSAM_SpecTrans_xxx/latest.pth
+python3 train.py --resume ./checkpoints/ESSA_SSAM_SpecTrans_xxx/latest.pth
 ```
 
 ### Training Tips
@@ -370,54 +381,49 @@ feature_dim = 64        # from 128
 
 **Faster Training:**
 ```bash
-# Use lightweight config
-python train.py --config lightweight --data_root ./data/CAVE
-```
-
-**Monitor Training:**
-```bash
-# In another terminal
-tail -f logs/ESSA_SSAM_SpecTrans_xxx/training.log
+python3 train.py --config lightweight --data_root ./data/CAVE
 ```
 
 ---
 
 ## 🧪 Testing & Evaluation
 
-### Full-Image Test (Paper-Style)
-
-**Recommended for final results:**
+### Full-Image Test (khuyên dùng)
 
 ```bash
-python test_full_image.py \
+python3 test_full_image.py \
     --checkpoint ./checkpoints/ESSA_SSAM_SpecTrans_xxx/best.pth \
-    --data_root ./data/CAVE \
+    --data_root <DATA_ROOT> \
+    --dataset_type <DATASET_LABEL> \
     --save_images
 ```
 
-**Features:**
-- Test trên full images (no patches)
-- Crop border theo paper style
-- Fixed test set (4 scenes)
-- Reproducible results
+Ví dụ:
 
+```bash
+python3 test_full_image.py --checkpoint ./checkpoints/ESSA_SSAM_SpecTrans_xxx/best.pth --data_root ./data/MyDataset --dataset_type MyDataset
+```
+
+`--dataset_type` chỉ là nhãn hiển thị/log, nhận chuỗi tự do.
 
 ### Comprehensive Evaluation
 
 ```bash
-python evaluate.py \
+python3 evaluate.py \
     --checkpoint ./checkpoints/ESSA_SSAM_SpecTrans_xxx/best.pth \
-    --data_root ./data/CAVE \
+    --data_root ./data/MyDataset \
+    --dataset_type MyDataset \
     --save_images
 ```
 
 ### Model Comparison
 
 ```bash
-python evaluate.py \
+python3 evaluate.py \
     --checkpoint ./checkpoints/ESSA_SSAM_SpecTrans_xxx/best.pth \
     --compare ./checkpoints/ESSA_SSAM_xxx/best.pth \
-    --data_root ./data/CAVE
+    --data_root ./data/MyDataset \
+    --dataset_type MyDataset
 ```
 
 ### Metrics Explained
@@ -579,7 +585,7 @@ ls -R data/CAVE/
 
 ```bash
 # Use lightweight config
-python train.py --config lightweight
+python3 train.py --config lightweight --data_root ./data/CAVE
 
 # Or reduce workers
 # In config.py: num_workers = 0
@@ -629,17 +635,17 @@ learning_rate = 1e-4  # Reduce if loss explodes
 
 ```bash
 # 1. Train all 3 models
-python train.py --config baseline       # ESSA
-python train.py --config proposed       # ESSA-SSAM
-python train.py --config spectrans      # ESSA-SSAM-SpecTrans
+python3 train.py --config baseline  --data_root ./data/CAVE
+python3 train.py --config proposed  --data_root ./data/CAVE
+python3 train.py --config spectrans --data_root ./data/CAVE
 
 # 2. Test all models
-python test_full_image.py --checkpoint checkpoints/ESSA_xxx/best.pth --data_root ./data/CAVE
-python test_full_image.py --checkpoint checkpoints/ESSA_SSAM_xxx/best.pth --data_root ./data/CAVE
-python test_full_image.py --checkpoint checkpoints/ESSA_SSAM_SpecTrans_xxx/best.pth --data_root ./data/CAVE
+python3 test_full_image.py --checkpoint checkpoints/ESSA_xxx/best.pth --data_root ./data/MyDataset --dataset_type MyDataset
+python3 test_full_image.py --checkpoint checkpoints/ESSA_SSAM_xxx/best.pth --data_root ./data/MyDataset --dataset_type MyDataset
+python3 test_full_image.py --checkpoint checkpoints/ESSA_SSAM_SpecTrans_xxx/best.pth --data_root ./data/MyDataset --dataset_type MyDataset
 
 # 3. Compare results
-python evaluate.py --checkpoint spectrans.pth --compare ssam.pth --data_root ./data/CAVE
+python3 evaluate.py --checkpoint spectrans.pth --compare ssam.pth --data_root ./data/MyDataset --dataset_type MyDataset
 
 # 4. Create tables for thesis (manually from results)
 ```
@@ -648,15 +654,15 @@ python evaluate.py --checkpoint spectrans.pth --compare ssam.pth --data_root ./d
 
 **Train:**
 ```bash
-python train.py --config spectrans --data_root ./data/CAVE
+python3 train.py --config spectrans --data_root ./data/CAVE
 ```
 
 **Test:**
 ```bash
-python test_full_image.py --checkpoint best.pth --data_root ./data/CAVE
+python3 test_full_image.py --checkpoint best.pth --data_root ./data/MyDataset --dataset_type MyDataset
 ```
 
 **Compare:**
 ```bash
-python evaluate.py --checkpoint model1.pth --compare model2.pth
+python3 evaluate.py --checkpoint model1.pth --compare model2.pth --data_root ./data/MyDataset --dataset_type MyDataset
 ```
