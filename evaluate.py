@@ -12,30 +12,28 @@ from tqdm import tqdm
 import json
 import matplotlib.pyplot as plt
 
+from config import infer_dataset_name
 from data.dataset import HyperspectralTestDataset
+from models.factory import build_model_from_config
 from utils.metrics import MetricsCalculator
-from models.essa_original import ESSA
-from models.essa_improved import ESSA_SSAM
-from models.essa_ssam_spectrans import ESSA_SSAM_SpecTrans
 from utils.device import resolve_device
 
 
 class Evaluator:
     """Evaluator class để đánh giá model"""
     
-    def __init__(self, checkpoint_path, data_root, dataset_type='custom', 
+    def __init__(self, checkpoint_path, data_root, 
                  save_results=True, save_images=True):
         """
         Args:
             checkpoint_path: Path to model checkpoint
             data_root: Path to test data
-            dataset_type: Dataset label for logging (free text)
             save_results: Whether to save results to JSON
             save_images: Whether to save reconstructed images
         """
         self.checkpoint_path = checkpoint_path
         self.data_root = data_root
-        self.dataset_type = dataset_type
+        self.dataset_name = infer_dataset_name(data_root)
         self.save_results = save_results
         self.save_images = save_images
         
@@ -59,42 +57,28 @@ class Evaluator:
         # Results directory
         self.results_dir = os.path.join('./results', 
                                        os.path.basename(os.path.dirname(checkpoint_path)))
-        os.makedirs(self.results_dir, exist_ok=True)
         
         print(f"Results will be saved to: {self.results_dir}")
+
+    @staticmethod
+    def _remove_dir_if_effectively_empty(path):
+        if not os.path.isdir(path):
+            return
+        entries = [e for e in os.listdir(path) if e != '.DS_Store']
+        if not entries:
+            ds_store = os.path.join(path, '.DS_Store')
+            if os.path.exists(ds_store):
+                os.remove(ds_store)
+            os.rmdir(path)
+
+    def cleanup_empty_results_dir(self):
+        self._remove_dir_if_effectively_empty(self.results_dir)
     
     def build_model(self):
         """Build model from checkpoint config"""
         model_name = self.config.get('model_name', 'ESSA_SSAM')
         num_bands = getattr(self, 'num_bands_detected', self.config.get('num_spectral_bands', 31))
-        feature_dim = self.config.get('feature_dim', 128)
-        upscale = self.config.get('upscale_factor', 4)
-        
-        if model_name == 'ESSA_Original':
-            model = ESSA(inch=num_bands, dim=feature_dim, upscale=upscale)
-        elif model_name == 'ESSA_SSAM':
-            fusion_mode = self.config.get('fusion_mode', 'sequential')
-            model = ESSA_SSAM(
-                inch=num_bands, 
-                dim=feature_dim, 
-                upscale=upscale,
-                fusion_mode=fusion_mode
-            )
-        elif model_name == 'ESSA_SSAM_SpecTrans':
-            fusion_mode = self.config.get('fusion_mode', 'sequential')
-            use_spectrans = self.config.get('use_spectrans', True)
-            spectrans_depth = self.config.get('spectrans_depth', 2)
-            model = ESSA_SSAM_SpecTrans(
-                inch=num_bands,
-                dim=feature_dim,
-                upscale=upscale,
-                fusion_mode=fusion_mode,
-                use_spectrans=use_spectrans,
-                spectrans_depth=spectrans_depth
-            )
-        else:
-            raise ValueError(f"Unknown model: {model_name}")
-        
+        model = build_model_from_config(self.config, num_bands_override=num_bands)
         model = model.to(self.device)
         
         num_params = sum(p.numel() for p in model.parameters())
@@ -106,11 +90,19 @@ class Evaluator:
     def build_dataloader(self):
         """Build test dataloader"""
         upscale = self.config.get('upscale_factor', 4)
+        split_seed = self.config.get('split_seed', 42)
+        train_ratio = self.config.get('train_ratio', 0.8)
+        val_ratio = self.config.get('val_ratio', 0.1)
+        regenerate_split = self.config.get('regenerate_split', False)
         
         test_dataset = HyperspectralTestDataset(
             data_root=self.data_root,
             split='test',
-            upscale=upscale
+            upscale=upscale,
+            split_seed=split_seed,
+            train_ratio=train_ratio,
+            val_ratio=val_ratio,
+            force_regenerate_split=regenerate_split
         )
 
         self.num_bands_detected = test_dataset.num_bands
@@ -205,8 +197,10 @@ class Evaluator:
     
     def save_results_json(self, avg_metrics, all_metrics):
         """Save results to JSON file"""
+        os.makedirs(self.results_dir, exist_ok=True)
         results = {
             'checkpoint': self.checkpoint_path,
+            'dataset': self.dataset_name,
             'config': self.config,
             'average_metrics': avg_metrics,
             'per_image_metrics': all_metrics
@@ -229,6 +223,7 @@ class Evaluator:
         """
         # Convert to numpy
         sr_np = sr_image.cpu().numpy()  # [C, H, W]
+        os.makedirs(self.results_dir, exist_ok=True)
         
         # Save as .npy file (preserves all spectral bands)
         save_name = f"{os.path.splitext(filename)[0]}_SR.npy"
@@ -257,7 +252,7 @@ class Evaluator:
             plt.close()
 
 
-def compare_models(checkpoint1, checkpoint2, data_root, dataset_type='custom'):
+def compare_models(checkpoint1, checkpoint2, data_root):
     """
     So sánh 2 models
     Useful cho ablation study hoặc so sánh baseline vs proposed
@@ -267,14 +262,12 @@ def compare_models(checkpoint1, checkpoint2, data_root, dataset_type='custom'):
     
     # Evaluate model 1
     print("\nModel 1:")
-    evaluator1 = Evaluator(checkpoint1, data_root, dataset_type, 
-                           save_results=False, save_images=False)
+    evaluator1 = Evaluator(checkpoint1, data_root, save_results=False, save_images=False)
     avg1, _ = evaluator1.evaluate()
     
     # Evaluate model 2
     print("\nModel 2:")
-    evaluator2 = Evaluator(checkpoint2, data_root, dataset_type,
-                           save_results=False, save_images=False)
+    evaluator2 = Evaluator(checkpoint2, data_root, save_results=False, save_images=False)
     avg2, _ = evaluator2.evaluate()
     
     # Print comparison
@@ -308,8 +301,6 @@ def main():
                        help='Path to model checkpoint')
     parser.add_argument('--data_root', type=str, required=True,
                        help='Path to test data')
-    parser.add_argument('--dataset_type', type=str, default='custom',
-                       help='Dataset label for logging (free text)')
     parser.add_argument('--save_images', action='store_true',
                        help='Save reconstructed images')
     parser.add_argument('--compare', type=str, default=None,
@@ -319,18 +310,27 @@ def main():
     
     if args.compare:
         # Compare two models
-        compare_models(args.checkpoint, args.compare, args.data_root, args.dataset_type)
+        compare_models(args.checkpoint, args.compare, args.data_root)
     else:
         # Single model evaluation
-        evaluator = Evaluator(
-            checkpoint_path=args.checkpoint,
-            data_root=args.data_root,
-            dataset_type=args.dataset_type,
-            save_results=True,
-            save_images=args.save_images
-        )
-        
-        evaluator.evaluate()
+        evaluator = None
+        try:
+            evaluator = Evaluator(
+                checkpoint_path=args.checkpoint,
+                data_root=args.data_root,
+                save_results=True,
+                save_images=args.save_images
+            )
+            
+            evaluator.evaluate()
+        except KeyboardInterrupt:
+            print("\nEvaluation interrupted by user.")
+            if evaluator is not None:
+                evaluator.cleanup_empty_results_dir()
+        except Exception:
+            if evaluator is not None:
+                evaluator.cleanup_empty_results_dir()
+            raise
 
 
 if __name__ == '__main__':

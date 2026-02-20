@@ -25,16 +25,18 @@ class SpectralMultiHeadAttention(nn.Module):
         """
         super().__init__()
         
-        assert num_bands % num_heads == 0, f"num_bands ({num_bands}) must be divisible by num_heads ({num_heads})"
+        assert num_bands % num_heads == 0, (
+            f"num_bands ({num_bands}) must be divisible by num_heads ({num_heads})"
+        )
         
         self.num_bands = num_bands
         self.num_heads = num_heads
         self.head_dim = num_bands // num_heads
-        self.scale = self.head_dim ** -0.5
         
-        # Linear projections cho Q, K, V
-        self.qkv = nn.Linear(num_bands, num_bands * 3)
-        self.proj = nn.Linear(num_bands, num_bands)
+        # Learnable projections on spectral channels for each spatial position.
+        # Input in attention is reshaped to [B, C, N], N = H*W.
+        self.qkv = nn.Conv1d(num_bands, num_bands * 3, kernel_size=1)
+        self.proj = nn.Conv1d(num_bands, num_bands, kernel_size=1)
         
         self.dropout = nn.Dropout(dropout)
         
@@ -46,25 +48,32 @@ class SpectralMultiHeadAttention(nn.Module):
             out: [B, N, C] với spectral attention applied
         """
         B, N, C = x.shape
-        
-        # Generate Q, K, V
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim)
-        qkv = qkv.permute(2, 0, 3, 1, 4)  # [3, B, num_heads, N, head_dim]
-        q, k, v = qkv[0], qkv[1], qkv[2]
-        
-        # Attention scores
-        attn = (q @ k.transpose(-2, -1)) * self.scale  # [B, num_heads, N, N]
+
+        # [B, N, C] -> [B, C, N] so attention is computed across spectral tokens.
+        x = x.transpose(1, 2).contiguous()
+
+        # Generate Q, K, V in spectral space: [B, 3C, N].
+        qkv = self.qkv(x)
+        q, k, v = qkv.chunk(3, dim=1)
+
+        # Split heads: [B, C, N] -> [B, heads, head_dim, N].
+        q = q.reshape(B, self.num_heads, self.head_dim, N)
+        k = k.reshape(B, self.num_heads, self.head_dim, N)
+        v = v.reshape(B, self.num_heads, self.head_dim, N)
+
+        # Attention over spectral dimension per head: [B, heads, head_dim, head_dim].
+        scale = 1.0 / math.sqrt(max(N, 1))
+        attn = torch.matmul(q, k.transpose(-2, -1)) * scale
         attn = attn.softmax(dim=-1)
         attn = self.dropout(attn)
-        
-        # Apply attention to values
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-        
-        # Output projection
+
+        # Apply spectral attention and merge heads back to [B, C, N].
+        x = torch.matmul(attn, v).reshape(B, C, N)
+
+        # Output projection then restore [B, N, C].
         x = self.proj(x)
         x = self.dropout(x)
-        
-        return x
+        return x.transpose(1, 2).contiguous()
 
 
 class SpectralFeedForward(nn.Module):

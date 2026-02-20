@@ -5,6 +5,7 @@ Run: python train.py --config proposed
 
 import os
 import argparse
+import time
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
@@ -14,15 +15,10 @@ import numpy as np
 
 from config import Config, ConfigBaseline, ConfigProposed, ConfigAblation, ConfigLightweight, ConfigSpecTrans
 from data.dataset import HyperspectralDataset
+from models.factory import build_model_from_config
 from utils.metrics import MetricsCalculator
 from utils.losses import L1Loss, L2Loss, CombinedLoss, AdaptiveCombinedLoss
 from utils.device import resolve_device
-
-# Import models
-from models.essa_original import ESSA
-from models.essa_improved import ESSA_SSAM
-from models.essa_ssam_spectrans import ESSA_SSAM_SpecTrans
-
 
 class Trainer:
     """Trainer class cho training và validation"""
@@ -33,13 +29,11 @@ class Trainer:
         self.device = resolve_device(config.device)
         self.use_amp = bool(config.mixed_precision and self.device.type == 'cuda')
         self.scaler = torch.amp.GradScaler('cuda', enabled=self.use_amp)
+        self.log_file = None
 
     
         # Set random seed
         self.set_seed(config.seed)
-        
-        # Create directories
-        config.create_dirs()
         
         # Build data loaders
         self.train_loader, self.val_loader = self.build_dataloaders()
@@ -75,41 +69,61 @@ class Trainer:
             torch.cuda.manual_seed_all(seed)
 
         np.random.seed(seed)
+
+    @staticmethod
+    def format_duration(seconds):
+        total = int(seconds)
+        h, rem = divmod(total, 3600)
+        m, s = divmod(rem, 60)
+        if h > 0:
+            return f"{h:02d}:{m:02d}:{s:02d}"
+        return f"{m:02d}:{s:02d}"
+
+    @staticmethod
+    def _remove_dir_if_effectively_empty(path):
+        if not os.path.isdir(path):
+            return
+        entries = [e for e in os.listdir(path) if e != '.DS_Store']
+        if not entries:
+            ds_store = os.path.join(path, '.DS_Store')
+            if os.path.exists(ds_store):
+                os.remove(ds_store)
+            os.rmdir(path)
+
+    def cleanup_empty_outputs(self):
+        if self.log_file is not None:
+            self.log_file.close()
+            self.log_file = None
+        self._remove_dir_if_effectively_empty(os.path.join(self.config.log_dir, 'images'))
+        self._remove_dir_if_effectively_empty(self.config.log_dir)
+        self._remove_dir_if_effectively_empty(self.config.checkpoint_dir)
+
+    def _ensure_output_dirs(self):
+        os.makedirs(self.config.checkpoint_dir, exist_ok=True)
+        os.makedirs(self.config.log_dir, exist_ok=True)
+
+    def _open_log_file(self):
+        self._ensure_output_dirs()
+        if self.log_file is None:
+            log_path = os.path.join(self.config.log_dir, 'training.log')
+            self.log_file = open(log_path, 'a', encoding='utf-8', buffering=1)
+            self.log_file.write("=== Training Log Started ===\n")
+
+    def _log(self, message):
+        print(message)
+        if self.log_file is not None:
+            self.log_file.write(message + "\n")
     
     def build_model(self):
         """Build model based on config"""
-        if self.config.model_name == 'ESSA_Original':
-            model = ESSA(
-                inch=self.config.num_spectral_bands,
-                dim=self.config.feature_dim,
-                upscale=self.config.upscale_factor
-            )
-        elif self.config.model_name == 'ESSA_SSAM':
-            model = ESSA_SSAM(
-                inch=self.config.num_spectral_bands, 
-                dim=self.config.feature_dim,
-                upscale=self.config.upscale_factor,
-                fusion_mode=self.config.fusion_mode
-            )
-        elif self.config.model_name == 'ESSA_SSAM_SpecTrans':
-            model = ESSA_SSAM_SpecTrans(
-                inch=self.config.num_spectral_bands,
-                dim=self.config.feature_dim,
-                upscale=self.config.upscale_factor,
-                fusion_mode=self.config.fusion_mode,
-                use_spectrans=self.config.use_spectrans,
-                spectrans_depth=self.config.spectrans_depth
-            )
-        else:
-            raise ValueError(f"Unknown model: {self.config.model_name}")
-        
+        model = build_model_from_config(self.config)
         model = model.to(self.device)
         
         # Print model info
         num_params = sum(p.numel() for p in model.parameters())
-        print(f"Model: {self.config.model_name}")
-        print(f"Parameters: {num_params:,}")
-        print(f"Using device: {self.device}")
+        self._log(f"Model: {self.config.model_name}")
+        self._log(f"Parameters: {num_params:,}")
+        self._log(f"Using device: {self.device}")
         
         return model
     
@@ -121,7 +135,12 @@ class Trainer:
             data_root=self.config.data_root,
             patch_size=self.config.patch_size,
             upscale=self.config.upscale_factor,
-            augment=self.config.use_augmentation
+            augment=self.config.use_augmentation,
+            split='trainval',
+            split_seed=self.config.split_seed,
+            train_ratio=self.config.train_ratio,
+            val_ratio=self.config.val_ratio,
+            force_regenerate_split=self.config.regenerate_split
         )
 
         # Sync config with detected number of spectral bands
@@ -132,9 +151,12 @@ class Trainer:
             )
         self.config.num_spectral_bands = full_dataset.num_bands
 
-        # Split ratio (80% train / 20% val)
+        # Split ratio for internal train/val split
         total_size = len(full_dataset)
-        train_size = int(0.8 * total_size)
+        val_ratio = float(self.config.val_split)
+        val_ratio = min(max(val_ratio, 0.0), 0.9)
+        train_size = int((1.0 - val_ratio) * total_size)
+        train_size = min(max(train_size, 1), total_size - 1) if total_size > 1 else total_size
         val_size = total_size - train_size
 
         train_dataset, val_dataset = random_split(
@@ -165,9 +187,9 @@ class Trainer:
             **loader_kwargs
         )
 
-        print(f"Total samples: {total_size}")
-        print(f"Train samples: {train_size}, Val samples: {val_size}")
-        print(f"DataLoader workers: {num_workers}, pin_memory: {pin_memory}")
+        self._log(f"Total samples: {total_size}")
+        self._log(f"Train samples: {train_size}, Val samples: {val_size}")
+        self._log(f"DataLoader workers: {num_workers}, pin_memory: {pin_memory}")
 
         return train_loader, val_loader
     
@@ -239,6 +261,7 @@ class Trainer:
     
     def train_epoch(self, epoch):
         """Train for one epoch"""
+        epoch_start = time.time()
         self.model.train()
         epoch_loss = 0.0
         
@@ -278,7 +301,8 @@ class Trainer:
             epoch_loss += loss.item()
         
         avg_loss = epoch_loss / len(self.train_loader)
-        return avg_loss
+        train_time = time.time() - epoch_start
+        return avg_loss, train_time
     
     def validate(self):
         """Validate the model"""
@@ -321,6 +345,7 @@ class Trainer:
     
     def save_checkpoint(self, epoch, metrics, is_best=False):
         """Save model checkpoint"""
+        self._ensure_output_dirs()
         checkpoint = {
             'epoch': epoch,
             'model_state_dict': self.model.state_dict(),
@@ -338,7 +363,7 @@ class Trainer:
         if is_best:
             best_path = os.path.join(self.config.checkpoint_dir, 'best.pth')
             torch.save(checkpoint, best_path)
-            print(f"💾 Best model saved! PSNR: {metrics['PSNR']:.2f} dB")
+            self._log(f"💾 Best model saved! PSNR: {metrics['PSNR']:.2f} dB")
         
         # Save periodic checkpoints
         if epoch % self.config.save_checkpoint_every == 0:
@@ -356,50 +381,77 @@ class Trainer:
             self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         
         self.current_epoch = checkpoint['epoch']
-        print(f"Resumed from epoch {self.current_epoch}")
+        self._log(f"Resumed from epoch {self.current_epoch}")
     
     def train(self):
         """Main training loop"""
-        print("\n" + "="*70)
-        print("Starting Training")
-        print("="*70)
-        
-        for epoch in range(self.current_epoch + 1, self.config.num_epochs + 1):
-            # Train
-            train_loss = self.train_epoch(epoch)
-            self.train_losses.append(train_loss)
-            
-            # Validate
-            if epoch % self.config.validate_every == 0:
-                val_metrics = self.validate()
-                self.val_metrics.append(val_metrics)
+        self._open_log_file()
+        self._log("\n" + "="*70)
+        self._log("Starting Training")
+        self._log("="*70)
+
+        training_start = time.time()
+        try:
+            for epoch in range(self.current_epoch + 1, self.config.num_epochs + 1):
+                epoch_start = time.time()
+
+                # Train
+                train_loss, train_time = self.train_epoch(epoch)
+                self.train_losses.append(train_loss)
+
+                val_metrics = None
+                val_time = 0.0
+
+                # Validate
+                if epoch % self.config.validate_every == 0:
+                    val_start = time.time()
+                    val_metrics = self.validate()
+                    val_time = time.time() - val_start
+                    self.val_metrics.append(val_metrics)
+
+                    # Save checkpoint
+                    is_best = val_metrics['PSNR'] > self.best_psnr
+                    if is_best:
+                        self.best_psnr = val_metrics['PSNR']
+                    
+                    self.save_checkpoint(epoch, val_metrics, is_best)
+
+                epoch_total_time = time.time() - epoch_start
+
+                # Print metrics + timing (readable summary block)
+                self._log("")
+                self._log("=" * 70)
+                self._log(f"Epoch {epoch}/{self.config.num_epochs} Summary")
+                self._log("-" * 70)
+                self._log(f"  Train Loss      : {train_loss:.4f}")
+                if val_metrics is not None:
+                    self._log(f"  Val PSNR        : {val_metrics['PSNR']:.2f} dB")
+                    self._log(f"  Val SSIM        : {val_metrics['SSIM']:.4f}")
+                    self._log(f"  Val SAM         : {val_metrics['SAM']:.4f}°")
+                    self._log(f"  Val ERGAS       : {val_metrics['ERGAS']:.4f}")
+                self._log(f"  Train Time      : {self.format_duration(train_time)} ({train_time:.2f} seconds)")
+                if val_metrics is not None:
+                    self._log(f"  Validate Time   : {self.format_duration(val_time)} ({val_time:.2f} seconds)")
+                self._log(f"  Epoch Total Time: {self.format_duration(epoch_total_time)} ({epoch_total_time:.2f} seconds)")
+                self._log("=" * 70)
                 
-                # Print metrics
-                print(f"\nEpoch {epoch}:")
-                print(f"  Train Loss: {train_loss:.4f}")
-                print(f"  Val PSNR: {val_metrics['PSNR']:.2f} dB")
-                print(f"  Val SSIM: {val_metrics['SSIM']:.4f}")
-                print(f"  Val SAM: {val_metrics['SAM']:.4f}°")
-                print(f"  Val ERGAS: {val_metrics['ERGAS']:.4f}")
-                
-                # Save checkpoint
-                is_best = val_metrics['PSNR'] > self.best_psnr
-                if is_best:
-                    self.best_psnr = val_metrics['PSNR']
-                
-                self.save_checkpoint(epoch, val_metrics, is_best)
-            
-            # Update learning rate
-            if self.scheduler:
-                if self.config.lr_scheduler == 'plateau' and epoch % self.config.validate_every == 0:
-                    self.scheduler.step(val_metrics['PSNR'])
-                elif self.config.lr_scheduler != 'plateau':
-                    self.scheduler.step()
-        
-        print("\n" + "="*70)
-        print("Training Completed!")
-        print(f"Best PSNR: {self.best_psnr:.2f} dB")
-        print("="*70)
+                # Update learning rate
+                if self.scheduler:
+                    if self.config.lr_scheduler == 'plateau' and val_metrics is not None:
+                        self.scheduler.step(val_metrics['PSNR'])
+                    elif self.config.lr_scheduler != 'plateau':
+                        self.scheduler.step()
+
+            total_train_time = time.time() - training_start
+            self._log("\n" + "="*70)
+            self._log("Training Completed!")
+            self._log(f"Best PSNR: {self.best_psnr:.2f} dB")
+            self._log(f"Total Training Time: {self.format_duration(total_train_time)} ({total_train_time:.2f} seconds)")
+            self._log("="*70)
+        finally:
+            if self.log_file is not None:
+                self.log_file.close()
+                self.log_file = None
 
 
 def main():
@@ -430,6 +482,7 @@ def main():
     # Override with command line arguments
     if args.data_root:
         config.data_root = args.data_root
+        config.refresh_output_paths()
     
     if args.resume:
         config.resume = True
@@ -440,7 +493,14 @@ def main():
     
     # Create trainer and start training
     trainer = Trainer(config)
-    trainer.train()
+    try:
+        trainer.train()
+    except KeyboardInterrupt:
+        print("\nTraining interrupted by user.")
+        trainer.cleanup_empty_outputs()
+    except Exception:
+        trainer.cleanup_empty_outputs()
+        raise
 
 
 if __name__ == '__main__':

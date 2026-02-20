@@ -17,13 +17,33 @@ import json
 from datetime import datetime
 import time
 
-from config import Config, ConfigBaseline, ConfigProposed, ConfigSpecTrans
+from config import Config, ConfigBaseline, ConfigProposed, ConfigSpecTrans, infer_dataset_name
 from data.dataset import HyperspectralTestDataset
-from models.essa_original import ESSA
-from models.essa_improved import ESSA_SSAM
-from models.essa_ssam_spectrans import ESSA_SSAM_SpecTrans
+from models.factory import build_model_from_config
 from utils.metrics import calculate_psnr, calculate_ssim, calculate_sam, calculate_ergas
 from utils.device import resolve_device
+
+
+def format_duration(seconds):
+    total = int(seconds)
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    if h > 0:
+        return f"{h:02d}:{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"
+
+
+def remove_dir_if_effectively_empty(path):
+    if not path:
+        return
+    if not os.path.isdir(path):
+        return
+    entries = [e for e in os.listdir(path) if e != '.DS_Store']
+    if not entries:
+        ds_store = os.path.join(path, '.DS_Store')
+        if os.path.exists(ds_store):
+            os.remove(ds_store)
+        os.rmdir(path)
 
 
 @torch.no_grad()
@@ -93,7 +113,9 @@ def test_full_image(model, dataloader, scale, device, crop_border=True, save_dir
     print("Testing on Full Images (Paper-style)")
     print("="*70)
 
-    for idx, (lr, hr, filepath) in enumerate(tqdm(dataloader, desc='Testing')):
+    test_start = time.time()
+    pbar = tqdm(dataloader, desc='Testing')
+    for idx, (lr, hr, filepath) in enumerate(pbar):
 
         start_time = time.time()   # ⬅ bắt đầu đo thời gian
 
@@ -105,8 +127,6 @@ def test_full_image(model, dataloader, scale, device, crop_border=True, save_dir
             sr = forward_chop(model, lr, scale, patch_size=32, overlap=8)
 
         elapsed = time.time() - start_time   # ⬅ kết thúc đo
-
-        print(f"\n⏱ {os.path.basename(filepath[0])} time: {elapsed:.2f} seconds")
 
         # Crop border (theo paper ESSA)
         if crop_border and scale > 1:
@@ -148,8 +168,9 @@ def test_full_image(model, dataloader, scale, device, crop_border=True, save_dir
         
         # Print first few results
         if idx < 5:
-            print(f"\n{image_name}:")
-            print(f"  PSNR: {psnr:.2f} dB, SSIM: {ssim:.4f}, SAM: {sam:.3f}°, ERGAS: {ergas:.3f}")
+            pbar.write(f"\n{image_name}:")
+            pbar.write(f"  PSNR: {psnr:.2f} dB, SSIM: {ssim:.4f}, SAM: {sam:.3f}°, ERGAS: {ergas:.3f}")
+            pbar.write(f"  Time: {format_duration(elapsed)} ({elapsed:.2f} seconds)")
         
         # Save reconstructed image if requested
         if save_dir is not None:
@@ -173,75 +194,25 @@ def test_full_image(model, dataloader, scale, device, crop_border=True, save_dir
                 rgb_path = os.path.join(save_dir, image_name.replace('.mat', '_SR_RGB.png'))
                 plt.imsave(rgb_path, rgb)
 
+    total_test_time = time.time() - test_start
+
     # Calculate average metrics
     avg_metrics = {
         "PSNR": float(np.mean(psnr_list)),
         "SSIM": float(np.mean(ssim_list)),
         "SAM": float(np.mean(sam_list)),
         "ERGAS": float(np.mean(ergas_list)),
-        "num_images": len(psnr_list)
+        "num_images": len(psnr_list),
+        "total_inference_time_sec": float(total_test_time),
+        "avg_time_per_image_sec": float(total_test_time / max(1, len(psnr_list)))
     }
     
     return avg_metrics, results_per_image
 
 
-def build_model(config_or_checkpoint):
-    """
-    Build model từ config hoặc checkpoint
-    
-    Args:
-        config_or_checkpoint: Config object hoặc checkpoint dict
-    
-    Returns:
-        model: PyTorch model
-    """
-    # Extract config
-    if isinstance(config_or_checkpoint, dict):
-        config = config_or_checkpoint
-        model_name = config.get('model_name', 'ESSA_SSAM')
-        num_bands = config.get('num_spectral_bands', 31)
-        feature_dim = config.get('feature_dim', 128)
-        upscale = config.get('upscale_factor', 4)
-    else:
-        model_name = config_or_checkpoint.model_name
-        num_bands = config_or_checkpoint.num_spectral_bands
-        feature_dim = config_or_checkpoint.feature_dim
-        upscale = config_or_checkpoint.upscale_factor
-    
-    # Build model
-    if model_name == "ESSA_Original" or model_name == "ESSA":
-        model = ESSA(
-            inch=num_bands,
-            dim=feature_dim,
-            upscale=upscale
-        )
-    elif model_name == "ESSA_SSAM":
-        fusion_mode = config.get('fusion_mode', 'sequential') if isinstance(config_or_checkpoint, dict) else config_or_checkpoint.fusion_mode
-        model = ESSA_SSAM(
-            inch=num_bands,
-            dim=feature_dim,
-            upscale=upscale,
-            fusion_mode=fusion_mode
-        )
-    elif model_name == "ESSA_SSAM_SpecTrans":
-        fusion_mode = config.get('fusion_mode', 'sequential') if isinstance(config_or_checkpoint, dict) else config_or_checkpoint.fusion_mode
-        use_spectrans = config.get('use_spectrans', True) if isinstance(config_or_checkpoint, dict) else config_or_checkpoint.use_spectrans
-        spectrans_depth = config.get('spectrans_depth', 2) if isinstance(config_or_checkpoint, dict) else config_or_checkpoint.spectrans_depth
-        model = ESSA_SSAM_SpecTrans(
-            inch=num_bands,
-            dim=feature_dim,
-            upscale=upscale,
-            fusion_mode=fusion_mode,
-            use_spectrans=use_spectrans,
-            spectrans_depth=spectrans_depth
-        )
-    else:
-        raise ValueError(f"Unknown model: {model_name}")
-    
-    return model
-
-
 def main():
+    script_start = time.time()
+
     parser = argparse.ArgumentParser(description='Test Hyperspectral SR Model (Full Image)')
     parser.add_argument('--checkpoint', type=str, required=True,
                        help='Path to checkpoint file (best.pth)')
@@ -250,16 +221,26 @@ def main():
     parser.add_argument('--config', type=str, default=None,
                        choices=['baseline', 'proposed', 'spectrans'],
                        help='Config preset (optional, will use checkpoint config if not provided)')
-    parser.add_argument('--dataset_type', type=str, default='custom',
-                       help='Dataset label for logging (free text, e.g. CAVE/Harvard/MyDataset)')
-    parser.add_argument('--crop_border', action='store_true', default=True,
-                       help='Crop border pixels (paper-style evaluation)')
+    parser.add_argument(
+        '--crop_border',
+        dest='crop_border',
+        action='store_true',
+        help='Crop border pixels (paper-style evaluation)'
+    )
+    parser.add_argument(
+        '--no_crop_border',
+        dest='crop_border',
+        action='store_false',
+        help='Do not crop border pixels'
+    )
+    parser.set_defaults(crop_border=True)
     parser.add_argument('--save_images', action='store_true',
                        help='Save reconstructed images')
     parser.add_argument('--output_dir', type=str, default='./test_results',
                        help='Output directory for results')
     
     args = parser.parse_args()
+    dataset_name = infer_dataset_name(args.data_root)
     
     # Load checkpoint
     print(f"\nLoading checkpoint: {args.checkpoint}")
@@ -287,15 +268,23 @@ def main():
     
     if isinstance(config, dict):
         upscale = config.get('upscale_factor', 4)
+        split_seed = config.get('split_seed', 42)
+        train_ratio = config.get('train_ratio', 0.8)
+        val_ratio = config.get('val_ratio', 0.1)
+        regenerate_split = config.get('regenerate_split', False)
     else:
         upscale = config['upscale_factor']
+        split_seed = 42
+        train_ratio = 0.8
+        val_ratio = 0.1
+        regenerate_split = False
     
     # Print test info
     print("\n" + "="*70)
     print("TEST CONFIGURATION")
     print("="*70)
     print(f"Model: {config.get('model_name') if isinstance(config, dict) else config['model_name']}")
-    print(f"Dataset: {args.dataset_type}")
+    print(f"Dataset: {dataset_name}")
     print(f"Data root: {args.data_root}")
     print(f"Upscale: x{upscale}")
     print(f"Crop border: {args.crop_border}")
@@ -307,6 +296,10 @@ def main():
         data_root=args.data_root,
         split='test',  # ⭐ FIXED test split - NEVER seen during training
         upscale=upscale,
+        split_seed=split_seed,
+        train_ratio=train_ratio,
+        val_ratio=val_ratio,
+        force_regenerate_split=regenerate_split
     )
 
     detected_num_bands = test_dataset.num_bands
@@ -323,7 +316,7 @@ def main():
         raise ValueError(
             f"No test images found!\n"
             f"Data root: {args.data_root}\n"
-            f"Dataset type: {args.dataset_type}\n"
+            f"Dataset: {dataset_name}\n"
             f"Expected split folder: 'test'"
         )
     
@@ -338,7 +331,7 @@ def main():
     print(f"\nTest set: {len(test_dataset)} images")
 
     # Build model after auto-detecting num_bands from dataset
-    model = build_model(config)
+    model = build_model_from_config(config, num_bands_override=detected_num_bands)
     model.load_state_dict(checkpoint['model_state_dict'])
     model = model.to(device)
 
@@ -349,71 +342,88 @@ def main():
     # Create output directory
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     output_dir = os.path.join(args.output_dir, f'test_{timestamp}')
-    os.makedirs(output_dir, exist_ok=True)
     
     save_dir = os.path.join(output_dir, 'images') if args.save_images else None
-    
-    # Run test
-    avg_metrics, per_image_results = test_full_image(
-        model=model,
-        dataloader=test_loader,
-        scale=upscale,
-        device=device,
-        crop_border=args.crop_border,
-        save_dir=save_dir
-    )
-    
-    # Print results
-    print("\n" + "="*70)
-    print("📊 FULL-IMAGE TEST RESULTS (Paper-style)")
-    print("="*70)
-    print(f"Number of test images: {avg_metrics['num_images']}")
-    print(f"\nAverage Metrics:")
-    print(f"  PSNR  : {avg_metrics['PSNR']:.2f} dB")
-    print(f"  SSIM  : {avg_metrics['SSIM']:.4f}")
-    print(f"  SAM   : {avg_metrics['SAM']:.3f}°")
-    print(f"  ERGAS : {avg_metrics['ERGAS']:.3f}")
-    print("="*70)
-    
-    # Save results to JSON
-    results = {
-        'checkpoint': args.checkpoint,
-        'dataset': args.dataset_type,
-        'data_root': args.data_root,
-        'crop_border': args.crop_border,
-        'timestamp': timestamp,
-        'average_metrics': avg_metrics,
-        'per_image_results': per_image_results
-    }
-    
-    json_path = os.path.join(output_dir, 'test_results.json')
-    with open(json_path, 'w') as f:
-        json.dump(results, f, indent=2)
-    
-    print(f"\n✅ Results saved to: {json_path}")
-    if args.save_images:
-        print(f"✅ Images saved to: {save_dir}")
-    
-    # Save summary table
-    summary_path = os.path.join(output_dir, 'summary.txt')
-    with open(summary_path, 'w') as f:
-        f.write("="*70 + "\n")
-        f.write("FULL-IMAGE TEST RESULTS\n")
-        f.write("="*70 + "\n")
-        f.write(f"Checkpoint: {args.checkpoint}\n")
-        f.write(f"Dataset: {args.dataset_type}\n")
-        f.write(f"Test images: {avg_metrics['num_images']}\n\n")
-        f.write(f"PSNR  : {avg_metrics['PSNR']:.2f} dB\n")
-        f.write(f"SSIM  : {avg_metrics['SSIM']:.4f}\n")
-        f.write(f"SAM   : {avg_metrics['SAM']:.3f}°\n")
-        f.write(f"ERGAS : {avg_metrics['ERGAS']:.3f}\n")
-        f.write("="*70 + "\n\n")
-        f.write("Per-image results:\n")
-        f.write("-"*70 + "\n")
-        for result in per_image_results:
-            f.write(f"{result['image']:<30} PSNR: {result['PSNR']:.2f}  SSIM: {result['SSIM']:.4f}  SAM: {result['SAM']:.3f}\n")
-    
-    print(f"✅ Summary saved to: {summary_path}")
+    try:
+        # Run test
+        avg_metrics, per_image_results = test_full_image(
+            model=model,
+            dataloader=test_loader,
+            scale=upscale,
+            device=device,
+            crop_border=args.crop_border,
+            save_dir=save_dir
+        )
+
+        total_runtime_sec = time.time() - script_start
+        
+        # Print results
+        print("\n" + "="*70)
+        print("📊 FULL-IMAGE TEST RESULTS (Paper-style)")
+        print("="*70)
+        print(f"Number of test images: {avg_metrics['num_images']}")
+        print(f"\nAverage Metrics:")
+        print(f"  PSNR  : {avg_metrics['PSNR']:.2f} dB")
+        print(f"  SSIM  : {avg_metrics['SSIM']:.4f}")
+        print(f"  SAM   : {avg_metrics['SAM']:.3f}°")
+        print(f"  ERGAS : {avg_metrics['ERGAS']:.3f}")
+        print(f"  Inference Total Time : {format_duration(avg_metrics['total_inference_time_sec'])} ({avg_metrics['total_inference_time_sec']:.2f} seconds)")
+        print(f"  Avg Time / Image     : {format_duration(avg_metrics['avg_time_per_image_sec'])} ({avg_metrics['avg_time_per_image_sec']:.2f} seconds)")
+        print(f"  Total Runtime        : {format_duration(total_runtime_sec)} ({total_runtime_sec:.2f} seconds)")
+        print("="*70)
+
+        # Save results to JSON
+        results = {
+            'checkpoint': args.checkpoint,
+            'dataset': dataset_name,
+            'data_root': args.data_root,
+            'crop_border': args.crop_border,
+            'timestamp': timestamp,
+            'total_runtime_sec': float(total_runtime_sec),
+            'average_metrics': avg_metrics,
+            'per_image_results': per_image_results
+        }
+
+        os.makedirs(output_dir, exist_ok=True)
+        json_path = os.path.join(output_dir, 'test_results.json')
+        with open(json_path, 'w') as f:
+            json.dump(results, f, indent=2)
+
+        print(f"\n✅ Results saved to: {json_path}")
+        if args.save_images:
+            print(f"✅ Images saved to: {save_dir}")
+
+        # Save summary table
+        summary_path = os.path.join(output_dir, 'summary.txt')
+        with open(summary_path, 'w') as f:
+            f.write("="*70 + "\n")
+            f.write("FULL-IMAGE TEST RESULTS\n")
+            f.write("="*70 + "\n")
+            f.write(f"Checkpoint: {args.checkpoint}\n")
+            f.write(f"Dataset: {dataset_name}\n")
+            f.write(f"Test images: {avg_metrics['num_images']}\n\n")
+            f.write(f"PSNR  : {avg_metrics['PSNR']:.2f} dB\n")
+            f.write(f"SSIM  : {avg_metrics['SSIM']:.4f}\n")
+            f.write(f"SAM   : {avg_metrics['SAM']:.3f}°\n")
+            f.write(f"ERGAS : {avg_metrics['ERGAS']:.3f}\n")
+            f.write(f"Inference Total Time : {format_duration(avg_metrics['total_inference_time_sec'])} ({avg_metrics['total_inference_time_sec']:.2f} seconds)\n")
+            f.write(f"Avg Time / Image     : {format_duration(avg_metrics['avg_time_per_image_sec'])} ({avg_metrics['avg_time_per_image_sec']:.2f} seconds)\n")
+            f.write(f"Total Runtime        : {format_duration(total_runtime_sec)} ({total_runtime_sec:.2f} seconds)\n")
+            f.write("="*70 + "\n\n")
+            f.write("Per-image results:\n")
+            f.write("-"*70 + "\n")
+            for result in per_image_results:
+                f.write(f"{result['image']:<30} PSNR: {result['PSNR']:.2f}  SSIM: {result['SSIM']:.4f}  SAM: {result['SAM']:.3f}\n")
+
+        print(f"✅ Summary saved to: {summary_path}")
+    except KeyboardInterrupt:
+        print("\nTesting interrupted by user.")
+        remove_dir_if_effectively_empty(save_dir)
+        remove_dir_if_effectively_empty(output_dir)
+    except Exception:
+        remove_dir_if_effectively_empty(save_dir)
+        remove_dir_if_effectively_empty(output_dir)
+        raise
 
 
 if __name__ == "__main__":

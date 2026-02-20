@@ -160,10 +160,10 @@ class SpectralTransformer(nn.Module):
 ```bash
 # Clone repository
 git clone <your-repo-url>
-cd hyperspectral-sr
+cd Enhance_HSR
 
 # Create virtual environment
-python -m venv venv
+python3 -m venv venv
 source venv/bin/activate  # Linux/Mac
 # hoặc
 venv\Scripts\activate  # Windows
@@ -176,11 +176,11 @@ pip install -r requirements.txt
 
 ```bash
 # Test imports
-python -c "import torch; print(f'PyTorch: {torch.__version__}')"
-python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
+python3 -c "import torch; print(f'PyTorch: {torch.__version__}')"
+python3 -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
 
 # Test model creation
-python models/essa_ssam_spectrans.py
+python3 models/essa_ssam_spectrans.py
 ```
 
 **Expected output:**
@@ -191,6 +191,18 @@ Testing: ESSA-SSAM-SpecTrans (depth=2)
 model_name: ESSA-SSAM-SpecTrans
 total_parameters: 3,245,123
 ✅ All tests completed successfully!
+```
+
+### Smoke Test Commands (nhanh, không train full)
+
+```bash
+# Kiểm tra CLI chạy được
+python3 train.py --help
+python3 test_full_image.py --help
+python3 evaluate.py --help
+
+# Kiểm tra import model
+python3 -c "import models.essa_ssam_spectrans as m; print(hasattr(m, 'ESSA_SSAM_SpecTrans'))"
 ```
 
 ---
@@ -253,8 +265,9 @@ data/
 
 Project hỗ trợ split tự động theo từng dataset:
 - `data/splits.py` tạo `split.json` theo tỷ lệ mặc định `train=0.8`, `val=0.1`, `test=0.1` (seed=42)
-- `train.py` huấn luyện từ tập `train` và tách tiếp `80/20` cho train/val nội bộ
+- `train.py` gộp `train + val` rồi tách ngẫu nhiên lại `80/20` cho train/val nội bộ
 - `test_full_image.py` và `evaluate.py` dùng split `test`
+- Có thể chỉnh trực tiếp trong `config.py`: `split_seed`, `train_ratio`, `val_ratio`, `test_ratio`, `regenerate_split`
 
 **⚠️ Important:** Không dùng dữ liệu `test` để huấn luyện.
 
@@ -332,24 +345,27 @@ lr_scheduler = 'cosine'
 
 ```
 Model: ESSA_SSAM_SpecTrans
-Parameters: 3,245,123
-Train samples: 25, Val samples: 3
+Parameters: 3,114,659
+Train samples: 32, Val samples: 8
 
-Epoch 1/100: 100%|████████| 156/156 [02:34<00:00]
-  Train Loss: 0.0234
-  Val PSNR: 28.45 dB
-  Val SSIM: 0.8912
-  Val SAM: 4.23°
+Epoch 95:
+  Train Loss: 0.0658
+  Val PSNR: 37.20 dB
+  Val SSIM: 0.9013
+  Val SAM: 5.3076°
+  Val ERGAS: 6.4316
+  Train Time: 00:21 (21.34 seconds)
+  Validate Time: 00:02 (2.25 seconds)
+  Epoch Total Time: 00:23 (23.70 seconds)
+
+Epoch 96/100: 100%|████████| 32/32 [00:21<00:00, 1.50it/s, loss=0.0554, l1=0.0088, sam=0.0758]
+Validating: 100%|████████| 8/8 [00:02<00:00, 3.55it/s]
 
 ...
 
-Epoch 100/100:
-  Train Loss: 0.0089
-  Val PSNR: 33.87 dB
-  Val SSIM: 0.9445
-  Val SAM: 2.85°
-
-💾 Best model saved! PSNR: 33.87 dB
+Training Completed!
+Best PSNR: 37.53 dB
+Total Training Time: 00:38:12 (2292.44 seconds)
 ```
 
 ### Checkpoints
@@ -384,27 +400,73 @@ feature_dim = 64        # from 128
 python3 train.py --config lightweight --data_root ./data/CAVE
 ```
 
+**Theo dõi log train realtime:**
+```bash
+tail -f logs/<experiment_name>/training.log
+```
+
 ---
 
 ## 🧪 Testing & Evaluation
 
 ### Full-Image Test (khuyên dùng)
 
+Điều kiện trước khi test/evaluate:
+- Có checkpoint `.pth` từ bước train
+- `data_root` chứa file `.mat` và có/được tạo `split.json`
+
+```bash
+# Liệt kê checkpoint có sẵn
+find checkpoints -name best.pth
+```
+
 ```bash
 python3 test_full_image.py \
     --checkpoint ./checkpoints/ESSA_SSAM_SpecTrans_xxx/best.pth \
     --data_root <DATA_ROOT> \
-    --dataset_type <DATASET_LABEL> \
     --save_images
 ```
 
 Ví dụ:
 
 ```bash
-python3 test_full_image.py --checkpoint ./checkpoints/ESSA_SSAM_SpecTrans_xxx/best.pth --data_root ./data/MyDataset --dataset_type MyDataset
+python3 test_full_image.py --checkpoint ./checkpoints/ESSA_SSAM_SpecTrans_xxx/best.pth --data_root ./data/MyDataset
 ```
 
-`--dataset_type` chỉ là nhãn hiển thị/log, nhận chuỗi tự do.
+Ví dụ cụ thể cho Harvard:
+
+```bash
+python3 test_full_image.py \
+    --checkpoint ./checkpoints/ESSA_SSAM_Harvard_x4_xxx/best.pth \
+    --data_root ./data/Harvard \
+    --save_images
+```
+
+Ví dụ output mới (có time từng ảnh + time tổng):
+
+```
+imgf3.mat:
+  PSNR: 32.12 dB, SSIM: 0.8660, SAM: 7.028°, ERGAS: 7.247
+  Time: 01:21:00 (4860.39 seconds)
+
+...
+
+📊 FULL-IMAGE TEST RESULTS (Paper-style)
+Number of test images: 5
+Average Metrics:
+  PSNR  : 34.45 dB
+  SSIM  : 0.8952
+  SAM   : 4.230°
+  ERGAS : 4.755
+  Inference Total Time : 03:40:35 (13235.89 seconds)
+  Avg Time / Image     : 44:07 (2647.18 seconds)
+  Total Runtime        : 03:41:10 (13270.44 seconds)
+```
+
+Nếu gặp lỗi `ValueError: No .mat files found in ./Harvard`, nguyên nhân là sai đường dẫn.
+Hãy dùng `--data_root ./data/Harvard` (không phải `./Harvard`).
+
+Dataset label được tự suy ra từ tên folder `data_root` (ví dụ `./data/Harvard` -> `Harvard`).
 
 ### Comprehensive Evaluation
 
@@ -412,7 +474,15 @@ python3 test_full_image.py --checkpoint ./checkpoints/ESSA_SSAM_SpecTrans_xxx/be
 python3 evaluate.py \
     --checkpoint ./checkpoints/ESSA_SSAM_SpecTrans_xxx/best.pth \
     --data_root ./data/MyDataset \
-    --dataset_type MyDataset \
+    --save_images
+```
+
+Ví dụ cụ thể cho Harvard:
+
+```bash
+python3 evaluate.py \
+    --checkpoint ./checkpoints/ESSA_SSAM_Harvard_x4_xxx/best.pth \
+    --data_root ./data/Harvard \
     --save_images
 ```
 
@@ -422,8 +492,7 @@ python3 evaluate.py \
 python3 evaluate.py \
     --checkpoint ./checkpoints/ESSA_SSAM_SpecTrans_xxx/best.pth \
     --compare ./checkpoints/ESSA_SSAM_xxx/best.pth \
-    --data_root ./data/MyDataset \
-    --dataset_type MyDataset
+    --data_root ./data/MyDataset
 ```
 
 ### Metrics Explained
@@ -591,6 +660,11 @@ python3 train.py --config lightweight --data_root ./data/CAVE
 # In config.py: num_workers = 0
 ```
 
+**4. Có nhiều folder rỗng trong checkpoints/logs/results/test_results**
+
+- Scripts hiện đã tạo thư mục theo kiểu lazy (khi chuẩn bị ghi file).
+- Nếu run bị `Ctrl+C` hoặc lỗi giữa chừng, script sẽ tự cleanup folder rỗng.
+
 **5. Model Not Converging**
 
 ```python
@@ -640,12 +714,12 @@ python3 train.py --config proposed  --data_root ./data/CAVE
 python3 train.py --config spectrans --data_root ./data/CAVE
 
 # 2. Test all models
-python3 test_full_image.py --checkpoint checkpoints/ESSA_xxx/best.pth --data_root ./data/MyDataset --dataset_type MyDataset
-python3 test_full_image.py --checkpoint checkpoints/ESSA_SSAM_xxx/best.pth --data_root ./data/MyDataset --dataset_type MyDataset
-python3 test_full_image.py --checkpoint checkpoints/ESSA_SSAM_SpecTrans_xxx/best.pth --data_root ./data/MyDataset --dataset_type MyDataset
+python3 test_full_image.py --checkpoint checkpoints/ESSA_xxx/best.pth --data_root ./data/MyDataset
+python3 test_full_image.py --checkpoint checkpoints/ESSA_SSAM_xxx/best.pth --data_root ./data/MyDataset
+python3 test_full_image.py --checkpoint checkpoints/ESSA_SSAM_SpecTrans_xxx/best.pth --data_root ./data/MyDataset
 
 # 3. Compare results
-python3 evaluate.py --checkpoint spectrans.pth --compare ssam.pth --data_root ./data/MyDataset --dataset_type MyDataset
+python3 evaluate.py --checkpoint spectrans.pth --compare ssam.pth --data_root ./data/MyDataset
 
 # 4. Create tables for thesis (manually from results)
 ```
@@ -659,10 +733,10 @@ python3 train.py --config spectrans --data_root ./data/CAVE
 
 **Test:**
 ```bash
-python3 test_full_image.py --checkpoint best.pth --data_root ./data/MyDataset --dataset_type MyDataset
+python3 test_full_image.py --checkpoint best.pth --data_root ./data/MyDataset
 ```
 
 **Compare:**
 ```bash
-python3 evaluate.py --checkpoint model1.pth --compare model2.pth --data_root ./data/MyDataset --dataset_type MyDataset
+python3 evaluate.py --checkpoint model1.pth --compare model2.pth --data_root ./data/MyDataset
 ```

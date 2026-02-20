@@ -16,6 +16,7 @@ from .spectral_transformer import (
     SpectralTransformerBlock,
     SpectralTransformerWithConv
 )
+from .factory import build_model_by_name, build_model_from_config
 
 __all__ = [
     'ESSA',
@@ -27,5 +28,7 @@ __all__ = [
     'SSAMBlock',
     'SpectralTransformer',
     'SpectralTransformerBlock',
-    'SpectralTransformerWithConv'
+    'SpectralTransformerWithConv',
+    'build_model_by_name',
+    'build_model_from_config'
 ]

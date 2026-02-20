@@ -7,6 +7,15 @@ import os
 from datetime import datetime
 
 
+def infer_dataset_name(data_root):
+    """Infer dataset label from data_root path."""
+    normalized = os.path.normpath(str(data_root or "")).strip()
+    if not normalized or normalized == ".":
+        return "dataset"
+    name = os.path.basename(normalized)
+    return name or "dataset"
+
+
 class Config:
     """Base configuration"""
     
@@ -14,9 +23,15 @@ class Config:
         # ============================================================
         # DATASET SETTINGS
         # ============================================================
-        self.dataset_type = 'Harvard'  # 'CAVE' hoặc 'Harvard'
         self.data_root = './data/Harvard'  # Đường dẫn đến dataset
+        self.dataset_name = infer_dataset_name(self.data_root)  # Auto from data_root
         self.num_spectral_bands = 31  # Số bands (31 cho CAVE/Harvard)
+        # Split settings (cho split.json)
+        self.split_seed = 42
+        self.train_ratio = 0.8
+        self.val_ratio = 0.1
+        self.test_ratio = 0.1  # Nên bằng 1 - train_ratio - val_ratio
+        self.regenerate_split = False  # True: tạo lại split.json theo seed/ratio ở trên
         
         # ============================================================
         # MODEL SETTINGS
@@ -61,9 +76,6 @@ class Config:
         # DATA AUGMENTATION
         # ============================================================
         self.use_augmentation = True
-        self.horizontal_flip = True
-        self.vertical_flip = True
-        self.rotation = True  # Random 90, 180, 270 rotation
         
         # ============================================================
         # VALIDATION & CHECKPOINT
@@ -72,18 +84,15 @@ class Config:
         self.validate_every = 1  # Validate mỗi N epochs
         self.save_checkpoint_every = 10  # Save checkpoint mỗi N epochs
         
-        # Checkpoint directory
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        self.experiment_name = f'{self.model_name}_{self.dataset_type}_x{self.upscale_factor}_{timestamp}'
-        self.checkpoint_dir = os.path.join('./checkpoints', self.experiment_name)
+        # Output naming
+        self.timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        self.refresh_output_paths()
         
         # ============================================================
         # LOGGING
         # ============================================================
-        self.log_dir = os.path.join('./logs', self.experiment_name)
         self.log_interval = 10  # Log mỗi N iterations
         self.save_images = True  # Lưu sample images khi validate
-        self.num_save_images = 4  # Số lượng images để lưu
         
         # ============================================================
         # RESUME TRAINING
@@ -94,7 +103,7 @@ class Config:
         # ============================================================
         # EVALUATION
         # ============================================================
-        self.eval_metrics = ['PSNR', 'SSIM', 'SAM', 'ERGAS']
+        # (Reserved for future evaluation options)
         
         # ============================================================
         # HARDWARE
@@ -108,6 +117,15 @@ class Config:
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         os.makedirs(self.log_dir, exist_ok=True)
         os.makedirs(os.path.join(self.log_dir, 'images'), exist_ok=True)
+
+    def refresh_output_paths(self):
+        """Refresh dataset label and output directories from current settings."""
+        self.dataset_name = infer_dataset_name(self.data_root)
+        self.experiment_name = (
+            f'{self.model_name}_{self.dataset_name}_x{self.upscale_factor}_{self.timestamp}'
+        )
+        self.checkpoint_dir = os.path.join('./checkpoints', self.experiment_name)
+        self.log_dir = os.path.join('./logs', self.experiment_name)
     
     def print_config(self):
         """In ra configuration"""
@@ -116,9 +134,12 @@ class Config:
         print("=" * 70)
         
         print("\n📊 Dataset Settings:")
-        print(f"  Dataset Type: {self.dataset_type}")
+        print(f"  Dataset: {self.dataset_name}")
         print(f"  Data Root: {self.data_root}")
         print(f"  Spectral Bands: {self.num_spectral_bands}")
+        print(f"  Split Seed: {self.split_seed}")
+        print(f"  Split Ratio (train/val/test): {self.train_ratio}/{self.val_ratio}/{self.test_ratio}")
+        print(f"  Regenerate Split: {self.regenerate_split}")
         
         print("\n🏗️  Model Settings:")
         print(f"  Model: {self.model_name}")
@@ -163,6 +184,7 @@ class ConfigBaseline(Config):
         self.model_name = 'ESSA_Original'
         self.feature_dim = 128
         self.loss_type = 'l1'
+        self.refresh_output_paths()
 
 
 class ConfigProposed(Config):
@@ -176,6 +198,7 @@ class ConfigProposed(Config):
         self.lambda_l1 = 1.0
         self.lambda_sam = 0.1
         self.lambda_ssim = 0.5
+        self.refresh_output_paths()
 
 
 class ConfigSpecTrans(Config):
@@ -191,6 +214,7 @@ class ConfigSpecTrans(Config):
         self.lambda_l1 = 1.0
         self.lambda_sam = 0.1
         self.lambda_ssim = 0.5
+        self.refresh_output_paths()
 
 
 class ConfigAblation(Config):
@@ -201,6 +225,7 @@ class ConfigAblation(Config):
         self.feature_dim = 128
         self.fusion_mode = ablation_type  # 'sequential', 'parallel', 'adaptive'
         self.loss_type = 'combined'
+        self.refresh_output_paths()
 
 
 class ConfigLightweight(Config):
@@ -212,6 +237,7 @@ class ConfigLightweight(Config):
         self.batch_size = 8
         self.patch_size = 64
         self.fusion_mode = 'sequential'
+        self.refresh_output_paths()
 
 
 # Test code

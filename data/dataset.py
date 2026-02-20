@@ -27,24 +27,40 @@ class HyperspectralDataset(Dataset):
     """
 
     def __init__(self, data_root, patch_size=128,
-                 upscale=4, augment=True):
+                 upscale=4, augment=True, split='train',
+                 split_seed=42, train_ratio=0.8, val_ratio=0.1,
+                 force_regenerate_split=False):
 
         self.data_root = data_root
         self.patch_size = patch_size
         self.upscale = upscale
         self.augment = augment
+        self.split = split
+        self.split_seed = split_seed
+        self.train_ratio = train_ratio
+        self.val_ratio = val_ratio
+        self.force_regenerate_split = force_regenerate_split
 
         # --------------------------------------------------
         # Create split if not exists
         # --------------------------------------------------
         split_file = os.path.join(data_root, "split.json")
-        if not os.path.exists(split_file):
-            generate_split(data_root)
+        if force_regenerate_split or not os.path.exists(split_file):
+            generate_split(
+                data_root,
+                train_ratio=train_ratio,
+                val_ratio=val_ratio,
+                seed=split_seed,
+                save=True
+            )
 
-        self.image_paths = get_split(data_root, "train")
+        if split == "trainval":
+            self.image_paths = get_split(data_root, "train") + get_split(data_root, "val")
+        else:
+            self.image_paths = get_split(data_root, split)
 
         if len(self.image_paths) == 0:
-            raise ValueError(f"No training images found in {data_root}")
+            raise ValueError(f"No images found for split '{split}' in {data_root}")
 
         # --------------------------------------------------
         # Auto detect spectral bands
@@ -55,7 +71,7 @@ class HyperspectralDataset(Dataset):
 
         self.num_bands = sample.shape[2]
         print(f"Detected {self.num_bands} spectral bands.")
-        print(f"Loaded {len(self.image_paths)} training images.")
+        print(f"Loaded {len(self.image_paths)} images for split '{self.split}'.")
 
     # ------------------------------------------------------
 
@@ -160,19 +176,18 @@ class HyperspectralDataset(Dataset):
         img = self._load_hyperspectral_image(self.image_paths[idx])
 
         if img is None:
-            hr = np.zeros((self.patch_size,
-                           self.patch_size,
-                           self.num_bands), dtype=np.float32)
-            lr = np.zeros((self.patch_size // self.upscale,
-                           self.patch_size // self.upscale,
-                           self.num_bands), dtype=np.float32)
-        else:
-            img = self._normalize(img)
-            hr = self._random_crop(img)
-            lr = self._downsample(hr, self.upscale)
+            bad_path = self.image_paths[idx]
+            raise RuntimeError(
+                f"Failed to load hyperspectral image: {bad_path}. "
+                "Please verify the .mat file integrity and keys."
+            )
 
-            if self.augment:
-                lr, hr = self._augment(lr, hr)
+        img = self._normalize(img)
+        hr = self._random_crop(img)
+        lr = self._downsample(hr, self.upscale)
+
+        if self.augment:
+            lr, hr = self._augment(lr, hr)
 
         lr = torch.from_numpy(lr.transpose(2, 0, 1))
         hr = torch.from_numpy(hr.transpose(2, 0, 1))
@@ -189,15 +204,27 @@ class HyperspectralTestDataset(Dataset):
     Full image test dataset
     """
 
-    def __init__(self, data_root, split='test', upscale=4):
+    def __init__(self, data_root, split='test', upscale=4,
+                 split_seed=42, train_ratio=0.8, val_ratio=0.1,
+                 force_regenerate_split=False):
 
         self.data_root = data_root
         self.split = split
         self.upscale = upscale
+        self.split_seed = split_seed
+        self.train_ratio = train_ratio
+        self.val_ratio = val_ratio
+        self.force_regenerate_split = force_regenerate_split
 
         split_file = os.path.join(data_root, "split.json")
-        if not os.path.exists(split_file):
-            generate_split(data_root)
+        if force_regenerate_split or not os.path.exists(split_file):
+            generate_split(
+                data_root,
+                train_ratio=train_ratio,
+                val_ratio=val_ratio,
+                seed=split_seed,
+                save=True
+            )
 
         self.image_paths = get_split(data_root, split)
 
@@ -205,6 +232,8 @@ class HyperspectralTestDataset(Dataset):
             raise ValueError(f"No images found for split '{split}'")
 
         sample = self._load_hyperspectral_image(self.image_paths[0])
+        if sample is None:
+            raise ValueError("Cannot determine number of spectral bands for test dataset.")
         self.num_bands = sample.shape[2]
 
         print(f"Detected {self.num_bands} spectral bands.")
@@ -233,7 +262,8 @@ class HyperspectralTestDataset(Dataset):
 
             return img.astype(np.float32)
 
-        except:
+        except Exception as e:
+            print(f"Error loading {path}: {e}")
             return None
 
     # ------------------------------------------------------
@@ -246,6 +276,12 @@ class HyperspectralTestDataset(Dataset):
     def __getitem__(self, idx):
 
         img = self._load_hyperspectral_image(self.image_paths[idx])
+        if img is None:
+            bad_path = self.image_paths[idx]
+            raise RuntimeError(
+                f"Failed to load test hyperspectral image: {bad_path}. "
+                "Please verify the .mat file integrity and keys."
+            )
 
         img_min, img_max = img.min(), img.max()
         if img_max - img_min > 0:
