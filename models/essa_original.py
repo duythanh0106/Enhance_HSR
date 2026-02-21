@@ -6,7 +6,6 @@ Code gốc từ file bạn cung cấp
 import math
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import numpy as np
 
 np.random.seed(0)

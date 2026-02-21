@@ -12,6 +12,55 @@ import random
 from .splits import generate_split, get_split
 
 
+def load_hyperspectral_image(path):
+    """Load a hyperspectral cube from .mat file."""
+    mat_data = sio.loadmat(path)
+    possible_keys = ['rad', 'cube', 'ref', 'data', 'img']
+
+    img = None
+    for key in possible_keys:
+        if key in mat_data:
+            img = mat_data[key]
+            break
+
+    if img is None:
+        numeric_arrays = [
+            v for v in mat_data.values()
+            if isinstance(v, np.ndarray) and v.ndim == 3
+        ]
+        if numeric_arrays:
+            img = max(numeric_arrays, key=lambda x: x.size)
+
+    if img is None:
+        raise ValueError(f"No hyperspectral data found in {path}")
+
+    return img.astype(np.float32)
+
+
+def normalize_image(img):
+    """Min-max normalize cube to [0, 1]."""
+    img_min, img_max = img.min(), img.max()
+    if img_max - img_min > 0:
+        img = (img - img_min) / (img_max - img_min)
+    return img
+
+
+def downsample_mean(img, scale):
+    """
+    Downsample by block averaging using vectorized operations.
+
+    Keeps the same semantics as old loop implementation: truncate borders that
+    do not fit into full `scale x scale` blocks.
+    """
+    h, w, c = img.shape
+    new_h, new_w = h // scale, w // scale
+    if new_h == 0 or new_w == 0:
+        raise ValueError(f"Image too small for scale={scale}: shape={img.shape}")
+
+    trimmed = img[:new_h * scale, :new_w * scale, :]
+    return trimmed.reshape(new_h, scale, new_w, scale, c).mean(axis=(1, 3)).astype(np.float32)
+
+
 # ==========================================================
 # TRAINING DATASET
 # ==========================================================
@@ -28,7 +77,7 @@ class HyperspectralDataset(Dataset):
 
     def __init__(self, data_root, patch_size=128,
                  upscale=4, augment=True, split='train',
-                 split_seed=42, train_ratio=0.8, val_ratio=0.1,
+                 split_seed=42, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1,
                  force_regenerate_split=False):
 
         self.data_root = data_root
@@ -39,6 +88,7 @@ class HyperspectralDataset(Dataset):
         self.split_seed = split_seed
         self.train_ratio = train_ratio
         self.val_ratio = val_ratio
+        self.test_ratio = test_ratio
         self.force_regenerate_split = force_regenerate_split
 
         # --------------------------------------------------
@@ -50,6 +100,7 @@ class HyperspectralDataset(Dataset):
                 data_root,
                 train_ratio=train_ratio,
                 val_ratio=val_ratio,
+                test_ratio=test_ratio,
                 seed=split_seed,
                 save=True
             )
@@ -77,28 +128,7 @@ class HyperspectralDataset(Dataset):
 
     def _load_hyperspectral_image(self, path):
         try:
-            mat_data = sio.loadmat(path)
-            possible_keys = ['rad', 'cube', 'ref', 'data', 'img']
-
-            img = None
-            for key in possible_keys:
-                if key in mat_data:
-                    img = mat_data[key]
-                    break
-
-            if img is None:
-                numeric_arrays = [
-                    v for v in mat_data.values()
-                    if isinstance(v, np.ndarray) and v.ndim == 3
-                ]
-                if numeric_arrays:
-                    img = max(numeric_arrays, key=lambda x: x.size)
-
-            if img is None:
-                raise ValueError(f"No hyperspectral data found in {path}")
-
-            return img.astype(np.float32)
-
+            return load_hyperspectral_image(path)
         except Exception as e:
             print(f"Error loading {path}: {e}")
             return None
@@ -106,28 +136,12 @@ class HyperspectralDataset(Dataset):
     # ------------------------------------------------------
 
     def _normalize(self, img):
-        img_min, img_max = img.min(), img.max()
-        if img_max - img_min > 0:
-            img = (img - img_min) / (img_max - img_min)
-        return img
+        return normalize_image(img)
 
     # ------------------------------------------------------
 
     def _downsample(self, img, scale):
-        h, w, c = img.shape
-        new_h, new_w = h // scale, w // scale
-        img_down = np.zeros((new_h, new_w, c), dtype=np.float32)
-
-        for i in range(c):
-            for y in range(new_h):
-                for x in range(new_w):
-                    img_down[y, x, i] = img[
-                        y*scale:(y+1)*scale,
-                        x*scale:(x+1)*scale,
-                        i
-                    ].mean()
-
-        return img_down
+        return downsample_mean(img, scale)
 
     # ------------------------------------------------------
 
@@ -205,7 +219,7 @@ class HyperspectralTestDataset(Dataset):
     """
 
     def __init__(self, data_root, split='test', upscale=4,
-                 split_seed=42, train_ratio=0.8, val_ratio=0.1,
+                 split_seed=42, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1,
                  force_regenerate_split=False):
 
         self.data_root = data_root
@@ -214,6 +228,7 @@ class HyperspectralTestDataset(Dataset):
         self.split_seed = split_seed
         self.train_ratio = train_ratio
         self.val_ratio = val_ratio
+        self.test_ratio = test_ratio
         self.force_regenerate_split = force_regenerate_split
 
         split_file = os.path.join(data_root, "split.json")
@@ -222,6 +237,7 @@ class HyperspectralTestDataset(Dataset):
                 data_root,
                 train_ratio=train_ratio,
                 val_ratio=val_ratio,
+                test_ratio=test_ratio,
                 seed=split_seed,
                 save=True
             )
@@ -243,25 +259,7 @@ class HyperspectralTestDataset(Dataset):
 
     def _load_hyperspectral_image(self, path):
         try:
-            mat_data = sio.loadmat(path)
-            possible_keys = ['rad', 'cube', 'ref', 'data', 'img']
-
-            img = None
-            for key in possible_keys:
-                if key in mat_data:
-                    img = mat_data[key]
-                    break
-
-            if img is None:
-                numeric_arrays = [
-                    v for v in mat_data.values()
-                    if isinstance(v, np.ndarray) and v.ndim == 3
-                ]
-                if numeric_arrays:
-                    img = max(numeric_arrays, key=lambda x: x.size)
-
-            return img.astype(np.float32)
-
+            return load_hyperspectral_image(path)
         except Exception as e:
             print(f"Error loading {path}: {e}")
             return None
@@ -283,23 +281,8 @@ class HyperspectralTestDataset(Dataset):
                 "Please verify the .mat file integrity and keys."
             )
 
-        img_min, img_max = img.min(), img.max()
-        if img_max - img_min > 0:
-            img = (img - img_min) / (img_max - img_min)
-
-        h, w, c = img.shape
-        new_h, new_w = h // self.upscale, w // self.upscale
-
-        lr = np.zeros((new_h, new_w, c), dtype=np.float32)
-
-        for i in range(c):
-            for y in range(new_h):
-                for x in range(new_w):
-                    lr[y, x, i] = img[
-                        y*self.upscale:(y+1)*self.upscale,
-                        x*self.upscale:(x+1)*self.upscale,
-                        i
-                    ].mean()
+        img = normalize_image(img)
+        lr = downsample_mean(img, self.upscale)
 
         lr = torch.from_numpy(lr.transpose(2, 0, 1))
         hr = torch.from_numpy(img.transpose(2, 0, 1))

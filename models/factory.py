@@ -1,5 +1,7 @@
 """Model factory utilities."""
 
+import torch
+
 from .essa_improved import ESSA_SSAM
 from .essa_original import ESSA
 from .essa_ssam_spectrans import ESSA_SSAM_SpecTrans
@@ -81,3 +83,51 @@ def build_model_from_config(config, num_bands_override=None):
         use_spectrans=use_spectrans,
         spectrans_depth=spectrans_depth,
     )
+
+
+def _adapt_state_dict_for_model(model, state_dict):
+    """
+    Adapt legacy/new weight shapes for SpectralTransformer attention layers.
+
+    Supports:
+    - Linear -> Conv1d(1x1): [out, in] -> [out, in, 1]
+    - Conv1d(1x1) -> Linear: [out, in, 1] -> [out, in]
+    """
+    target = model.state_dict()
+    adapted = {}
+    converted_keys = []
+
+    for key, value in state_dict.items():
+        if key not in target:
+            adapted[key] = value
+            continue
+
+        target_value = target[key]
+        if value.shape == target_value.shape:
+            adapted[key] = value
+            continue
+
+        if value.ndim == 2 and target_value.ndim == 3 and target_value.shape[-1] == 1:
+            if value.shape == target_value.shape[:2]:
+                adapted[key] = value.unsqueeze(-1)
+                converted_keys.append(key)
+                continue
+
+        if value.ndim == 3 and value.shape[-1] == 1 and target_value.ndim == 2:
+            if value.shape[:2] == target_value.shape:
+                adapted[key] = value.squeeze(-1)
+                converted_keys.append(key)
+                continue
+
+        adapted[key] = value
+
+    return adapted, converted_keys
+
+
+def load_state_dict_compat(model, state_dict, strict=True):
+    """
+    Load checkpoint weights with backward/forward compatibility adaptations.
+    """
+    adapted_state_dict, converted_keys = _adapt_state_dict_for_model(model, state_dict)
+    load_result = model.load_state_dict(adapted_state_dict, strict=strict)
+    return load_result, converted_keys

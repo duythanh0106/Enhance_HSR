@@ -8,14 +8,13 @@ import argparse
 import time
 import torch
 import torch.optim as optim
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader
 from tqdm import tqdm
-import json
 import numpy as np
 
-from config import Config, ConfigBaseline, ConfigProposed, ConfigAblation, ConfigLightweight, ConfigSpecTrans
+from config import Config, ConfigBaseline, ConfigProposed, ConfigLightweight, ConfigSpecTrans
 from data.dataset import HyperspectralDataset
-from models.factory import build_model_from_config
+from models.factory import build_model_from_config, load_state_dict_compat
 from utils.metrics import MetricsCalculator
 from utils.losses import L1Loss, L2Loss, CombinedLoss, AdaptiveCombinedLoss
 from utils.device import resolve_device
@@ -128,41 +127,44 @@ class Trainer:
         return model
     
     def build_dataloaders(self):
-        """Build train and validation dataloaders using random split"""
+        """Build train and validation dataloaders from split.json."""
 
-        # Load full dataset (NO split argument)
-        full_dataset = HyperspectralDataset(
-            data_root=self.config.data_root,
+        split_kwargs = {
+            "data_root": self.config.data_root,
+            "upscale": self.config.upscale_factor,
+            "split_seed": self.config.split_seed,
+            "train_ratio": self.config.train_ratio,
+            "val_ratio": self.config.val_ratio,
+            "test_ratio": self.config.test_ratio,
+            "force_regenerate_split": self.config.regenerate_split,
+        }
+
+        train_dataset = HyperspectralDataset(
             patch_size=self.config.patch_size,
-            upscale=self.config.upscale_factor,
             augment=self.config.use_augmentation,
-            split='trainval',
-            split_seed=self.config.split_seed,
-            train_ratio=self.config.train_ratio,
-            val_ratio=self.config.val_ratio,
-            force_regenerate_split=self.config.regenerate_split
+            split='train',
+            **split_kwargs
+        )
+
+        val_dataset = HyperspectralDataset(
+            patch_size=self.config.patch_size,
+            augment=False,
+            split='val',
+            **split_kwargs
         )
 
         # Sync config with detected number of spectral bands
-        if self.config.num_spectral_bands != full_dataset.num_bands:
+        if self.config.num_spectral_bands != train_dataset.num_bands:
             print(
                 f"Updating num_spectral_bands: "
-                f"{self.config.num_spectral_bands} -> {full_dataset.num_bands} (auto-detected)"
+                f"{self.config.num_spectral_bands} -> {train_dataset.num_bands} (auto-detected)"
             )
-        self.config.num_spectral_bands = full_dataset.num_bands
-
-        # Split ratio for internal train/val split
-        total_size = len(full_dataset)
-        val_ratio = float(self.config.val_split)
-        val_ratio = min(max(val_ratio, 0.0), 0.9)
-        train_size = int((1.0 - val_ratio) * total_size)
-        train_size = min(max(train_size, 1), total_size - 1) if total_size > 1 else total_size
-        val_size = total_size - train_size
-
-        train_dataset, val_dataset = random_split(
-            full_dataset,
-            [train_size, val_size]
-        )
+        self.config.num_spectral_bands = train_dataset.num_bands
+        if val_dataset.num_bands != train_dataset.num_bands:
+            raise ValueError(
+                f"Mismatch num_bands between train ({train_dataset.num_bands}) "
+                f"and val ({val_dataset.num_bands}) splits."
+            )
 
         num_workers = max(0, int(self.config.num_workers))
         pin_memory = self.device.type == 'cuda'
@@ -187,7 +189,9 @@ class Trainer:
             **loader_kwargs
         )
 
-        self._log(f"Total samples: {total_size}")
+        train_size = len(train_dataset)
+        val_size = len(val_dataset)
+        self._log(f"Total samples: {train_size + val_size}")
         self._log(f"Train samples: {train_size}, Val samples: {val_size}")
         self._log(f"DataLoader workers: {num_workers}, pin_memory: {pin_memory}")
 
@@ -374,7 +378,11 @@ class Trainer:
         """Load checkpoint to resume training"""
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
         
-        self.model.load_state_dict(checkpoint['model_state_dict'])
+        _, converted_keys = load_state_dict_compat(
+            self.model, checkpoint['model_state_dict'], strict=True
+        )
+        if converted_keys:
+            self._log(f"Converted {len(converted_keys)} legacy weight tensors for compatibility.")
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         
         if self.scheduler and checkpoint['scheduler_state_dict']:
@@ -419,7 +427,6 @@ class Trainer:
                 epoch_total_time = time.time() - epoch_start
 
                 # Print metrics + timing (readable summary block)
-                self._log("")
                 self._log("=" * 70)
                 self._log(f"Epoch {epoch}/{self.config.num_epochs} Summary")
                 self._log("-" * 70)
@@ -433,7 +440,7 @@ class Trainer:
                 if val_metrics is not None:
                     self._log(f"  Validate Time   : {self.format_duration(val_time)} ({val_time:.2f} seconds)")
                 self._log(f"  Epoch Total Time: {self.format_duration(epoch_total_time)} ({epoch_total_time:.2f} seconds)")
-                self._log("=" * 70)
+                self._log("=" * 70 + "\n")
                 
                 # Update learning rate
                 if self.scheduler:
@@ -443,10 +450,18 @@ class Trainer:
                         self.scheduler.step()
 
             total_train_time = time.time() - training_start
+            best_ckpt_path = os.path.join(self.config.checkpoint_dir, 'best.pth')
+            latest_ckpt_path = os.path.join(self.config.checkpoint_dir, 'latest.pth')
+            log_path = os.path.join(self.config.log_dir, 'training.log')
             self._log("\n" + "="*70)
             self._log("Training Completed!")
             self._log(f"Best PSNR: {self.best_psnr:.2f} dB")
             self._log(f"Total Training Time: {self.format_duration(total_train_time)} ({total_train_time:.2f} seconds)")
+            self._log("\nSaved Outputs:")
+            self._log(f"  Checkpoint Dir : {self.config.checkpoint_dir}")
+            self._log(f"  Best Checkpoint: {best_ckpt_path}")
+            self._log(f"  Latest Checkpoint: {latest_ckpt_path}")
+            self._log(f"  Training Log   : {log_path}")
             self._log("="*70)
         finally:
             if self.log_file is not None:

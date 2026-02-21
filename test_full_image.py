@@ -17,9 +17,9 @@ import json
 from datetime import datetime
 import time
 
-from config import Config, ConfigBaseline, ConfigProposed, ConfigSpecTrans, infer_dataset_name
+from config import ConfigBaseline, ConfigProposed, ConfigSpecTrans, infer_dataset_name
 from data.dataset import HyperspectralTestDataset
-from models.factory import build_model_from_config
+from models.factory import build_model_from_config, load_state_dict_compat
 from utils.metrics import calculate_psnr, calculate_ssim, calculate_sam, calculate_ergas
 from utils.device import resolve_device
 
@@ -271,12 +271,14 @@ def main():
         split_seed = config.get('split_seed', 42)
         train_ratio = config.get('train_ratio', 0.8)
         val_ratio = config.get('val_ratio', 0.1)
+        test_ratio = config.get('test_ratio', 0.1)
         regenerate_split = config.get('regenerate_split', False)
     else:
         upscale = config['upscale_factor']
         split_seed = 42
         train_ratio = 0.8
         val_ratio = 0.1
+        test_ratio = 0.1
         regenerate_split = False
     
     # Print test info
@@ -299,6 +301,7 @@ def main():
         split_seed=split_seed,
         train_ratio=train_ratio,
         val_ratio=val_ratio,
+        test_ratio=test_ratio,
         force_regenerate_split=regenerate_split
     )
 
@@ -332,7 +335,11 @@ def main():
 
     # Build model after auto-detecting num_bands from dataset
     model = build_model_from_config(config, num_bands_override=detected_num_bands)
-    model.load_state_dict(checkpoint['model_state_dict'])
+    _, converted_keys = load_state_dict_compat(
+        model, checkpoint['model_state_dict'], strict=True
+    )
+    if converted_keys:
+        print(f"Converted {len(converted_keys)} legacy weight tensors for compatibility.")
     model = model.to(device)
 
     num_params = sum(p.numel() for p in model.parameters())

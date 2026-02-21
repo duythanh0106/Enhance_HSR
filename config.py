@@ -49,7 +49,7 @@ class Config:
         # ============================================================
         self.batch_size = 1  # Batch size (giảm nếu GPU bị OOM)
         self.patch_size = 64  # Kích thước patch để crop (64, 128, 256)
-        self.num_epochs = 100  # Số epochs
+        self.num_epochs = 1000  # Số epochs
         self.num_workers = 4  # Số workers cho DataLoader
         
         # Learning rate
@@ -80,7 +80,6 @@ class Config:
         # ============================================================
         # VALIDATION & CHECKPOINT
         # ============================================================
-        self.val_split = 0.2  # 20% for validation
         self.validate_every = 1  # Validate mỗi N epochs
         self.save_checkpoint_every = 10  # Save checkpoint mỗi N epochs
         

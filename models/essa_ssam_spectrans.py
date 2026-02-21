@@ -10,15 +10,14 @@ Architecture:
 import math
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 try:
     from .spatial_spectral_attention import SpatialSpectralAttention
-    from .spectral_transformer import SpectralTransformer, SpectralTransformerWithConv
+    from .spectral_transformer import SpectralTransformer
 except ImportError:
     # Support direct script execution: `python models/essa_ssam_spectrans.py`
     from spatial_spectral_attention import SpatialSpectralAttention
-    from spectral_transformer import SpectralTransformer, SpectralTransformerWithConv
+    from spectral_transformer import SpectralTransformer
 
 
 class PatchEmbed(nn.Module):

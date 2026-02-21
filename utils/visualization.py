@@ -6,7 +6,6 @@ Dùng cho báo cáo khóa luận và paper
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import seaborn as sns
 
 
 def plot_spectral_curves(lr, sr, hr, pixel_coords, save_path=None):

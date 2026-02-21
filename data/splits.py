@@ -13,10 +13,69 @@ import glob
 import random
 
 
+def _validate_ratios(train_ratio, val_ratio, test_ratio):
+    ratios = {
+        "train_ratio": float(train_ratio),
+        "val_ratio": float(val_ratio),
+        "test_ratio": float(test_ratio),
+    }
+    for name, value in ratios.items():
+        if value < 0.0:
+            raise ValueError(f"{name} must be >= 0, got {value}")
+    total = ratios["train_ratio"] + ratios["val_ratio"] + ratios["test_ratio"]
+    if total <= 0.0:
+        raise ValueError("At least one split ratio must be > 0")
+    return ratios, total
+
+
+def _compute_split_sizes(total, train_ratio, val_ratio, test_ratio):
+    ratios, ratio_sum = _validate_ratios(train_ratio, val_ratio, test_ratio)
+    keys = ["train", "val", "test"]
+    normalized = [ratios["train_ratio"] / ratio_sum, ratios["val_ratio"] / ratio_sum, ratios["test_ratio"] / ratio_sum]
+
+    raw_sizes = [total * r for r in normalized]
+    sizes = [int(v) for v in raw_sizes]
+    remainder = total - sum(sizes)
+
+    # Distribute leftovers to the largest fractional parts.
+    fractions = sorted(
+        ((raw_sizes[i] - sizes[i], i) for i in range(3)),
+        key=lambda x: x[0],
+        reverse=True,
+    )
+    for _, idx in fractions:
+        if remainder <= 0:
+            break
+        sizes[idx] += 1
+        remainder -= 1
+
+    # Ensure non-zero splits for positive ratios when possible.
+    positive_idxs = [i for i, r in enumerate(normalized) if r > 0.0]
+    if total >= len(positive_idxs):
+        need = [i for i in positive_idxs if sizes[i] == 0]
+        for idx in need:
+            sizes[idx] = 1
+        deficit = len(need)
+        while deficit > 0:
+            # Borrow one sample from the largest split that still has >1 sample.
+            candidates = sorted(
+                [(sizes[i], i) for i in range(len(sizes)) if sizes[i] > 1],
+                reverse=True,
+            )
+            if not candidates:
+                break
+            _, borrow_idx = candidates[0]
+            sizes[borrow_idx] -= 1
+            deficit -= 1
+
+    return dict(zip(keys, sizes))
+
+
 def generate_split(
     data_root,
     train_ratio=0.8,
     val_ratio=0.1,
+    test_ratio=0.1,
     seed=42,
     save=True,
 ):
@@ -27,6 +86,7 @@ def generate_split(
         data_root: folder containing .mat files
         train_ratio: training portion
         val_ratio: validation portion
+        test_ratio: testing portion
         seed: random seed
         save: whether to save split.json
 
@@ -41,21 +101,28 @@ def generate_split(
         raise ValueError(f"No .mat files found in {data_root}")
 
     # 2️⃣ Shuffle reproducibly
-    random.seed(seed)
-    random.shuffle(files)
+    rng = random.Random(seed)
+    rng.shuffle(files)
 
     # 3️⃣ Split
     total = len(files)
-    train_size = int(total * train_ratio)
-    val_size = int(total * val_ratio)
+    split_sizes = _compute_split_sizes(total, train_ratio, val_ratio, test_ratio)
+    train_size = split_sizes["train"]
+    val_size = split_sizes["val"]
+    test_size = split_sizes["test"]
 
     train = files[:train_size]
     val = files[train_size:train_size + val_size]
-    test = files[train_size + val_size:]
+    test = files[train_size + val_size:train_size + val_size + test_size]
 
     split_dict = {
         "seed": seed,
         "total": total,
+        "ratios": {
+            "train": float(train_ratio),
+            "val": float(val_ratio),
+            "test": float(test_ratio),
+        },
         "train": train,
         "val": val,
         "test": test,

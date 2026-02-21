@@ -265,7 +265,7 @@ data/
 
 Project hỗ trợ split tự động theo từng dataset:
 - `data/splits.py` tạo `split.json` theo tỷ lệ mặc định `train=0.8`, `val=0.1`, `test=0.1` (seed=42)
-- `train.py` gộp `train + val` rồi tách ngẫu nhiên lại `80/20` cho train/val nội bộ
+- `train.py` dùng trực tiếp split `train` và `val` từ `split.json` (không tách ngẫu nhiên lần 2)
 - `test_full_image.py` và `evaluate.py` dùng split `test`
 - Có thể chỉnh trực tiếp trong `config.py`: `split_seed`, `train_ratio`, `val_ratio`, `test_ratio`, `regenerate_split`
 
@@ -467,6 +467,16 @@ Nếu gặp lỗi `ValueError: No .mat files found in ./Harvard`, nguyên nhân 
 Hãy dùng `--data_root ./data/Harvard` (không phải `./Harvard`).
 
 Dataset label được tự suy ra từ tên folder `data_root` (ví dụ `./data/Harvard` -> `Harvard`).
+
+**Checkpoint compatibility note:**
+- Code hiện hỗ trợ tự động convert một số weight Spectral Transformer cũ khi load checkpoint
+  (ví dụ `Linear` weight 2D sang `Conv1d(1x1)` weight 3D cho `qkv/proj`).
+- Khi convert diễn ra, CLI sẽ in thông báo kiểu: `Converted N legacy weight tensors for compatibility.`
+
+**Performance note (vì sao test có thể nhanh hơn nhiều):**
+- Tiền xử lý downsample trong dataset đã được vectorize (thay cho loop pixel/band).
+- Spectral attention hiện chạy theo hướng `O(C^2 * HW)` thay vì kiểu spatial-token rất nặng trước đó.
+- Vì vậy thời gian test có thể giảm mạnh giữa các phiên bản code; hãy so sánh thời gian trên cùng commit để công bằng.
 
 ### Comprehensive Evaluation
 

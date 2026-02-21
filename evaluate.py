@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 
 from config import infer_dataset_name
 from data.dataset import HyperspectralTestDataset
-from models.factory import build_model_from_config
+from models.factory import build_model_from_config, load_state_dict_compat
 from utils.metrics import MetricsCalculator
 from utils.device import resolve_device
 
@@ -48,7 +48,11 @@ class Evaluator:
 
         # Build model (after dataset so num_bands can be auto-detected)
         self.model = self.build_model()
-        self.model.load_state_dict(self.checkpoint['model_state_dict'])
+        _, converted_keys = load_state_dict_compat(
+            self.model, self.checkpoint['model_state_dict'], strict=True
+        )
+        if converted_keys:
+            print(f"Converted {len(converted_keys)} legacy weight tensors for compatibility.")
         self.model.eval()
         
         # Metrics calculator
@@ -93,6 +97,7 @@ class Evaluator:
         split_seed = self.config.get('split_seed', 42)
         train_ratio = self.config.get('train_ratio', 0.8)
         val_ratio = self.config.get('val_ratio', 0.1)
+        test_ratio = self.config.get('test_ratio', 0.1)
         regenerate_split = self.config.get('regenerate_split', False)
         
         test_dataset = HyperspectralTestDataset(
@@ -102,6 +107,7 @@ class Evaluator:
             split_seed=split_seed,
             train_ratio=train_ratio,
             val_ratio=val_ratio,
+            test_ratio=test_ratio,
             force_regenerate_split=regenerate_split
         )
 
@@ -169,6 +175,7 @@ class Evaluator:
         # Save results
         if self.save_results:
             self.save_results_json(avg_metrics, all_metrics)
+            self.save_summary_txt(avg_metrics, all_metrics)
         
         return avg_metrics, all_metrics
     
@@ -211,6 +218,36 @@ class Evaluator:
             json.dump(results, f, indent=2)
         
         print(f"\n✅ Results saved to: {json_path}")
+
+    def save_summary_txt(self, avg_metrics, all_metrics):
+        """Save human-readable evaluation summary."""
+        os.makedirs(self.results_dir, exist_ok=True)
+        summary_path = os.path.join(self.results_dir, 'summary.txt')
+        with open(summary_path, 'w', encoding='utf-8') as f:
+            f.write("=" * 70 + "\n")
+            f.write("EVALUATION SUMMARY\n")
+            f.write("=" * 70 + "\n")
+            f.write(f"Checkpoint: {self.checkpoint_path}\n")
+            f.write(f"Dataset: {self.dataset_name}\n")
+            f.write(f"Data root: {self.data_root}\n")
+            f.write(f"Total images: {len(all_metrics)}\n\n")
+            f.write("Average Metrics:\n")
+            f.write(f"  PSNR : {avg_metrics['PSNR']:.2f} dB\n")
+            f.write(f"  SSIM : {avg_metrics['SSIM']:.4f}\n")
+            f.write(f"  SAM  : {avg_metrics['SAM']:.4f}°\n")
+            f.write(f"  ERGAS: {avg_metrics['ERGAS']:.4f}\n")
+            f.write("-" * 70 + "\n")
+            f.write("Per-image Metrics:\n")
+            for metrics in all_metrics:
+                f.write(
+                    f"{metrics['filename']:<30} "
+                    f"PSNR: {metrics['PSNR']:.2f}  "
+                    f"SSIM: {metrics['SSIM']:.4f}  "
+                    f"SAM: {metrics['SAM']:.4f}  "
+                    f"ERGAS: {metrics['ERGAS']:.4f}\n"
+                )
+            f.write("=" * 70 + "\n")
+        print(f"✅ Summary saved to: {summary_path}")
     
     def save_image(self, sr_image, filename, idx):
         """
