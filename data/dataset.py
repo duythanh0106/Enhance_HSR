@@ -9,30 +9,86 @@ from torch.utils.data import Dataset
 import numpy as np
 import scipy.io as sio
 import random
-from .splits import generate_split, get_split
+from .splits import generate_split, get_split, is_hyperspectral_mat
+
+try:
+    import h5py
+except ImportError:  # pragma: no cover - optional dependency at runtime
+    h5py = None
+
+
+def _to_hwc_cube(img):
+    """
+    Normalize cube layout to HxWxC by assuming the spectral dimension is the
+    smallest axis (typical for hyperspectral data).
+    """
+    if img.ndim != 3:
+        raise ValueError(f"Expected 3D hyperspectral cube, got shape={img.shape}")
+
+    smallest_axis = int(np.argmin(img.shape))
+    if smallest_axis == 2:
+        return img
+    if smallest_axis == 0:
+        return np.transpose(img, (2, 1, 0))
+    return np.transpose(img, (0, 2, 1))
+
+
+def _extract_hsi_from_mat_dict(mat_data, path):
+    possible_keys = ['rad', 'cube', 'ref', 'data', 'img', 'chikusei']
+
+    for key in possible_keys:
+        if key in mat_data:
+            value = mat_data[key]
+            if isinstance(value, np.ndarray) and value.ndim == 3 and np.issubdtype(value.dtype, np.number):
+                return _to_hwc_cube(value)
+
+    numeric_arrays = [
+        value for value in mat_data.values()
+        if isinstance(value, np.ndarray)
+        and value.ndim == 3
+        and np.issubdtype(value.dtype, np.number)
+    ]
+    if numeric_arrays:
+        return _to_hwc_cube(max(numeric_arrays, key=lambda x: x.size))
+
+    raise ValueError(f"No hyperspectral data found in {path}")
+
+
+def _load_hdf5_hyperspectral_image(path):
+    if h5py is None:
+        raise ValueError(
+            f"{path} appears to be MATLAB v7.3, but h5py is not installed."
+        )
+
+    possible_keys = ['rad', 'cube', 'ref', 'data', 'img', 'chikusei']
+    with h5py.File(path, "r") as f:
+        for key in possible_keys:
+            if key in f and isinstance(f[key], h5py.Dataset) and len(f[key].shape) == 3:
+                return _to_hwc_cube(f[key][()])
+
+        candidates = []
+
+        def visitor(name, obj):
+            if isinstance(obj, h5py.Dataset) and len(obj.shape) == 3:
+                candidates.append(name)
+
+        f.visititems(visitor)
+        if candidates:
+            # Read the largest candidate only.
+            best_name = max(candidates, key=lambda n: np.prod(f[n].shape))
+            return _to_hwc_cube(f[best_name][()])
+
+    raise ValueError(f"No hyperspectral data found in {path}")
 
 
 def load_hyperspectral_image(path):
     """Load a hyperspectral cube from .mat file."""
-    mat_data = sio.loadmat(path)
-    possible_keys = ['rad', 'cube', 'ref', 'data', 'img']
-
-    img = None
-    for key in possible_keys:
-        if key in mat_data:
-            img = mat_data[key]
-            break
-
-    if img is None:
-        numeric_arrays = [
-            v for v in mat_data.values()
-            if isinstance(v, np.ndarray) and v.ndim == 3
-        ]
-        if numeric_arrays:
-            img = max(numeric_arrays, key=lambda x: x.size)
-
-    if img is None:
-        raise ValueError(f"No hyperspectral data found in {path}")
+    try:
+        mat_data = sio.loadmat(path)
+        img = _extract_hsi_from_mat_dict(mat_data, path)
+    except NotImplementedError:
+        # MATLAB v7.3 files require HDF5 reader.
+        img = _load_hdf5_hyperspectral_image(path)
 
     return img.astype(np.float32)
 
@@ -110,13 +166,18 @@ class HyperspectralDataset(Dataset):
         else:
             self.image_paths = get_split(data_root, split)
 
+        self.image_paths = self._filter_valid_paths(self.image_paths)
         if len(self.image_paths) == 0:
             raise ValueError(f"No images found for split '{split}' in {data_root}")
 
         # --------------------------------------------------
         # Auto detect spectral bands
         # --------------------------------------------------
-        sample = self._load_hyperspectral_image(self.image_paths[0])
+        sample = None
+        for path in self.image_paths:
+            sample = self._load_hyperspectral_image(path)
+            if sample is not None:
+                break
         if sample is None:
             raise ValueError("Cannot determine number of spectral bands.")
 
@@ -132,6 +193,29 @@ class HyperspectralDataset(Dataset):
         except Exception as e:
             print(f"Error loading {path}: {e}")
             return None
+
+    # ------------------------------------------------------
+
+    def _filter_valid_paths(self, paths):
+        valid = []
+        skipped = []
+        for path in paths:
+            if is_hyperspectral_mat(path):
+                valid.append(path)
+            else:
+                skipped.append(path)
+
+        if skipped:
+            print(
+                f"⚠️ Skipping {len(skipped)} invalid/non-hyperspectral file(s) "
+                f"in split '{self.split}'."
+            )
+            for bad in skipped[:5]:
+                print(f"   - {bad}")
+            if len(skipped) > 5:
+                print(f"   ... and {len(skipped) - 5} more")
+
+        return valid
 
     # ------------------------------------------------------
 
@@ -243,11 +327,16 @@ class HyperspectralTestDataset(Dataset):
             )
 
         self.image_paths = get_split(data_root, split)
+        self.image_paths = self._filter_valid_paths(self.image_paths)
 
         if len(self.image_paths) == 0:
             raise ValueError(f"No images found for split '{split}'")
 
-        sample = self._load_hyperspectral_image(self.image_paths[0])
+        sample = None
+        for path in self.image_paths:
+            sample = self._load_hyperspectral_image(path)
+            if sample is not None:
+                break
         if sample is None:
             raise ValueError("Cannot determine number of spectral bands for test dataset.")
         self.num_bands = sample.shape[2]
@@ -263,6 +352,29 @@ class HyperspectralTestDataset(Dataset):
         except Exception as e:
             print(f"Error loading {path}: {e}")
             return None
+
+    # ------------------------------------------------------
+
+    def _filter_valid_paths(self, paths):
+        valid = []
+        skipped = []
+        for path in paths:
+            if is_hyperspectral_mat(path):
+                valid.append(path)
+            else:
+                skipped.append(path)
+
+        if skipped:
+            print(
+                f"⚠️ Skipping {len(skipped)} invalid/non-hyperspectral file(s) "
+                f"in split '{self.split}'."
+            )
+            for bad in skipped[:5]:
+                print(f"   - {bad}")
+            if len(skipped) > 5:
+                print(f"   ... and {len(skipped) - 5} more")
+
+        return valid
 
     # ------------------------------------------------------
 
@@ -283,6 +395,11 @@ class HyperspectralTestDataset(Dataset):
 
         img = normalize_image(img)
         lr = downsample_mean(img, self.upscale)
+        # Match HR size to the effective region used to synthesize LR.
+        # downsample_mean truncates borders not divisible by `upscale`.
+        hr_h = lr.shape[0] * self.upscale
+        hr_w = lr.shape[1] * self.upscale
+        img = img[:hr_h, :hr_w, :]
 
         lr = torch.from_numpy(lr.transpose(2, 0, 1))
         hr = torch.from_numpy(img.transpose(2, 0, 1))

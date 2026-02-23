@@ -146,12 +146,24 @@ class Trainer:
             **split_kwargs
         )
 
-        val_dataset = HyperspectralDataset(
-            patch_size=self.config.patch_size,
-            augment=False,
-            split='val',
-            **split_kwargs
-        )
+        try:
+            val_dataset = HyperspectralDataset(
+                patch_size=self.config.patch_size,
+                augment=False,
+                split='val',
+                **split_kwargs
+            )
+        except ValueError as exc:
+            message = str(exc)
+            if "No images found for split 'val'" not in message:
+                raise
+            self._log("⚠️ Validation split is empty. Falling back to split='train' for validation.")
+            val_dataset = HyperspectralDataset(
+                patch_size=self.config.patch_size,
+                augment=False,
+                split='train',
+                **split_kwargs
+            )
 
         # Sync config with detected number of spectral bands
         if self.config.num_spectral_bands != train_dataset.num_bands:

@@ -271,6 +271,23 @@ Project hỗ trợ split tự động theo từng dataset:
 
 **⚠️ Important:** Không dùng dữ liệu `test` để huấn luyện.
 
+### Trường hợp dataset chỉ có 1 ảnh + Ground Truth (Chikusei, PaviaCentre)
+
+Với các dataset kiểu này thường có:
+- 1 file hyperspectral cube chính (3D)
+- 1 file ground-truth/label (không phải cube 3D)
+
+Hành vi hiện tại của code:
+- Tự bỏ qua file ground-truth không phải hyperspectral cube khi tạo/đọc split
+- `split.json` thực tế sẽ thành `train=1, val=0, test=0` (vì chỉ có 1 ảnh hợp lệ)
+- Khi train: nếu `val` rỗng, code tự fallback dùng `train` để validate
+- Khi test/evaluate: nếu `test` rỗng, code tự fallback dùng `train` để test
+
+Vì vậy khi thấy warning:
+- `Test split is empty. Falling back to split='train'...`
+
+thì đó là đúng hành vi mong đợi cho dataset 1 ảnh.
+
 ---
 
 ## 🎓 Training
@@ -441,6 +458,44 @@ python3 test_full_image.py \
     --data_root ./data/Harvard \
     --save_images
 ```
+
+### Ví dụ cho dataset 1 ảnh + GT (Chikusei/PaviaCentre)
+
+Train:
+
+```bash
+# Chikusei
+python3 train.py --config spectrans --data_root ./data/Chikusei
+
+# PaviaCentre
+python3 train.py --config spectrans --data_root ./data/PaviaCentre
+```
+
+Test full-image (khuyên dùng CPU cho ảnh lớn để tránh crash MPS):
+
+```bash
+# Chikusei
+python3 test_full_image.py \
+    --checkpoint ./checkpoints/ESSA_SSAM_SpecTrans_Chikusei_x4_xxx/best.pth \
+    --data_root ./data/Chikusei \
+    --device cpu \
+    --chop_patch_size 32 \
+    --chop_overlap 8 \
+    --save_images
+
+# PaviaCentre
+python3 test_full_image.py \
+    --checkpoint ./checkpoints/ESSA_SSAM_SpecTrans_PaviaCentre_x4_xxx/best.pth \
+    --data_root ./data/PaviaCentre \
+    --device cpu \
+    --chop_patch_size 32 \
+    --chop_overlap 8 \
+    --save_images
+```
+
+Ý nghĩa 2 tham số inference:
+- `--chop_patch_size`: patch LR nhỏ hơn sẽ an toàn bộ nhớ hơn nhưng chậm hơn
+- `--chop_overlap`: overlap lớn hơn giúp giảm seam giữa patch nhưng chậm hơn
 
 Ví dụ output mới (có time từng ảnh + time tổng):
 

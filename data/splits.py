@@ -11,6 +11,12 @@ import os
 import json
 import glob
 import random
+import scipy.io as sio
+
+try:
+    import h5py
+except ImportError:  # pragma: no cover - optional dependency at runtime
+    h5py = None
 
 
 def _validate_ratios(train_ratio, val_ratio, test_ratio):
@@ -71,6 +77,53 @@ def _compute_split_sizes(total, train_ratio, val_ratio, test_ratio):
     return dict(zip(keys, sizes))
 
 
+def is_hyperspectral_mat(path):
+    """
+    Fast check whether a .mat file contains at least one 3D numeric array.
+    Uses scipy.io.whosmat metadata to avoid loading large arrays into memory.
+    """
+    preferred_keys = {"rad", "cube", "ref", "data", "img"}
+
+    # 1) Try standard MATLAB formats via scipy metadata.
+    try:
+        variables = sio.whosmat(path)
+        if variables:
+            for name, shape, _ in variables:
+                if name in preferred_keys and len(shape) == 3:
+                    return True
+            for _, shape, _ in variables:
+                if len(shape) == 3:
+                    return True
+    except Exception:
+        pass
+
+    # 2) Fallback for MATLAB v7.3 (HDF5-based) files.
+    if h5py is not None:
+        try:
+            with h5py.File(path, "r") as f:
+                # Check preferred keys first.
+                for key in preferred_keys:
+                    if key in f and isinstance(f[key], h5py.Dataset) and len(f[key].shape) == 3:
+                        return True
+
+                found_3d = False
+
+                def visitor(_, obj):
+                    nonlocal found_3d
+                    if found_3d:
+                        return
+                    if isinstance(obj, h5py.Dataset) and len(obj.shape) == 3:
+                        found_3d = True
+
+                f.visititems(visitor)
+                if found_3d:
+                    return True
+        except Exception:
+            pass
+
+    return False
+
+
 def generate_split(
     data_root,
     train_ratio=0.8,
@@ -100,20 +153,36 @@ def generate_split(
     if len(files) == 0:
         raise ValueError(f"No .mat files found in {data_root}")
 
+    valid_files = [f for f in files if is_hyperspectral_mat(f)]
+    valid_set = set(valid_files)
+    skipped_files = [f for f in files if f not in valid_set]
+    if skipped_files:
+        print(f"⚠️ Skipping {len(skipped_files)} non-hyperspectral .mat file(s).")
+        for skipped in skipped_files[:5]:
+            print(f"   - {os.path.basename(skipped)}")
+        if len(skipped_files) > 5:
+            print(f"   ... and {len(skipped_files) - 5} more")
+
+    if len(valid_files) == 0:
+        raise ValueError(
+            f"No valid hyperspectral .mat files found in {data_root}. "
+            "Expected at least one file containing a 3D hyperspectral cube."
+        )
+
     # 2️⃣ Shuffle reproducibly
     rng = random.Random(seed)
-    rng.shuffle(files)
+    rng.shuffle(valid_files)
 
     # 3️⃣ Split
-    total = len(files)
+    total = len(valid_files)
     split_sizes = _compute_split_sizes(total, train_ratio, val_ratio, test_ratio)
     train_size = split_sizes["train"]
     val_size = split_sizes["val"]
     test_size = split_sizes["test"]
 
-    train = files[:train_size]
-    val = files[train_size:train_size + val_size]
-    test = files[train_size + val_size:train_size + val_size + test_size]
+    train = valid_files[:train_size]
+    val = valid_files[train_size:train_size + val_size]
+    test = valid_files[train_size + val_size:train_size + val_size + test_size]
 
     split_dict = {
         "seed": seed,

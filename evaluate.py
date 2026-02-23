@@ -41,6 +41,11 @@ class Evaluator:
         print("Loading checkpoint...")
         self.checkpoint = torch.load(checkpoint_path, map_location='cpu')
         self.config = self.checkpoint.get('config', {})
+        self.checkpoint_num_bands = None
+        self.checkpoint_data_root = None
+        if isinstance(self.config, dict):
+            self.checkpoint_num_bands = self.config.get('num_spectral_bands')
+            self.checkpoint_data_root = self.config.get('data_root')
         self.device = resolve_device(self.config.get('device', 'auto'))
         
         # Build dataset
@@ -100,18 +105,47 @@ class Evaluator:
         test_ratio = self.config.get('test_ratio', 0.1)
         regenerate_split = self.config.get('regenerate_split', False)
         
-        test_dataset = HyperspectralTestDataset(
-            data_root=self.data_root,
-            split='test',
-            upscale=upscale,
-            split_seed=split_seed,
-            train_ratio=train_ratio,
-            val_ratio=val_ratio,
-            test_ratio=test_ratio,
-            force_regenerate_split=regenerate_split
-        )
+        try:
+            test_dataset = HyperspectralTestDataset(
+                data_root=self.data_root,
+                split='test',
+                upscale=upscale,
+                split_seed=split_seed,
+                train_ratio=train_ratio,
+                val_ratio=val_ratio,
+                test_ratio=test_ratio,
+                force_regenerate_split=regenerate_split
+            )
+        except ValueError as exc:
+            message = str(exc)
+            if "No images found for split 'test'" not in message:
+                raise
+            print("⚠️ Test split is empty. Falling back to split='train' for evaluation.")
+            test_dataset = HyperspectralTestDataset(
+                data_root=self.data_root,
+                split='train',
+                upscale=upscale,
+                split_seed=split_seed,
+                train_ratio=train_ratio,
+                val_ratio=val_ratio,
+                test_ratio=test_ratio,
+                force_regenerate_split=regenerate_split
+            )
 
         self.num_bands_detected = test_dataset.num_bands
+        if (
+            self.checkpoint_num_bands is not None
+            and int(self.checkpoint_num_bands) != int(self.num_bands_detected)
+        ):
+            raise ValueError(
+                "Checkpoint spectral bands do not match evaluation dataset bands.\n"
+                f"  Checkpoint bands: {self.checkpoint_num_bands}\n"
+                f"  Evaluation dataset bands: {self.num_bands_detected}\n"
+                f"  Checkpoint data_root: {self.checkpoint_data_root}\n"
+                f"  Requested data_root: {self.data_root}\n"
+                "Use a checkpoint trained on the same spectral band count as the evaluation dataset."
+            )
+
         config_bands = self.config.get('num_spectral_bands')
         if config_bands != self.num_bands_detected:
             print(

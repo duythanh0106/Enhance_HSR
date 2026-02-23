@@ -64,6 +64,10 @@ def forward_chop(model, x, scale, patch_size=64, overlap=16):
     """
 
     b, c, h, w = x.size()
+    patch_size = max(1, int(patch_size))
+    patch_size = min(patch_size, h, w)
+    overlap = max(0, int(overlap))
+    overlap = min(overlap, patch_size - 1)
     stride = patch_size - overlap
 
     h_idx = list(range(0, h - patch_size, stride)) + [h - patch_size]
@@ -89,7 +93,16 @@ def forward_chop(model, x, scale, patch_size=64, overlap=16):
     return sr
 
 
-def test_full_image(model, dataloader, scale, device, crop_border=True, save_dir=None):
+def test_full_image(
+    model,
+    dataloader,
+    scale,
+    device,
+    crop_border=True,
+    save_dir=None,
+    chop_patch_size=32,
+    chop_overlap=8
+):
     """
     Test model trên full images (không crop patches)
     
@@ -124,9 +137,26 @@ def test_full_image(model, dataloader, scale, device, crop_border=True, save_dir
         
         # --- Sliding Window Inference ---
         with torch.inference_mode():
-            sr = forward_chop(model, lr, scale, patch_size=32, overlap=8)
+            sr = forward_chop(
+                model,
+                lr,
+                scale,
+                patch_size=chop_patch_size,
+                overlap=chop_overlap
+            )
 
         elapsed = time.time() - start_time   # ⬅ kết thúc đo
+
+        # Safety alignment: keep common region if shapes are not identical.
+        if sr.shape[-2:] != hr.shape[-2:]:
+            min_h = min(sr.shape[-2], hr.shape[-2])
+            min_w = min(sr.shape[-1], hr.shape[-1])
+            sr = sr[:, :, :min_h, :min_w]
+            hr = hr[:, :, :min_h, :min_w]
+            pbar.write(
+                f"⚠️ Shape mismatch resolved by cropping to common size: "
+                f"{min_h}x{min_w}"
+            )
 
         # Crop border (theo paper ESSA)
         if crop_border and scale > 1:
@@ -222,6 +252,25 @@ def main():
                        choices=['baseline', 'proposed', 'spectrans'],
                        help='Config preset (optional, will use checkpoint config if not provided)')
     parser.add_argument(
+        '--device',
+        type=str,
+        default=None,
+        choices=['auto', 'cuda', 'mps', 'cpu'],
+        help='Override device for testing (default: use checkpoint config)'
+    )
+    parser.add_argument(
+        '--chop_patch_size',
+        type=int,
+        default=32,
+        help='LR patch size for sliding-window inference (smaller = safer memory, slower)'
+    )
+    parser.add_argument(
+        '--chop_overlap',
+        type=int,
+        default=8,
+        help='Overlap size between LR patches (higher = smoother seams, slower)'
+    )
+    parser.add_argument(
         '--crop_border',
         dest='crop_border',
         action='store_true',
@@ -240,6 +289,16 @@ def main():
                        help='Output directory for results')
     
     args = parser.parse_args()
+    if args.chop_patch_size <= 0:
+        raise ValueError(f"--chop_patch_size must be > 0, got {args.chop_patch_size}")
+    if args.chop_overlap < 0:
+        raise ValueError(f"--chop_overlap must be >= 0, got {args.chop_overlap}")
+    if args.chop_overlap >= args.chop_patch_size:
+        raise ValueError(
+            f"--chop_overlap must be < --chop_patch_size "
+            f"(got overlap={args.chop_overlap}, patch_size={args.chop_patch_size})"
+        )
+
     dataset_name = infer_dataset_name(args.data_root)
     
     # Load checkpoint
@@ -247,8 +306,13 @@ def main():
     checkpoint = torch.load(args.checkpoint, map_location='cpu')
     
     # Get config from checkpoint or use provided config
+    checkpoint_num_bands = None
+    checkpoint_data_root = None
     if 'config' in checkpoint:
         config = checkpoint['config']
+        if isinstance(config, dict):
+            checkpoint_num_bands = config.get('num_spectral_bands')
+            checkpoint_data_root = config.get('data_root')
         print("Using config from checkpoint")
     elif args.config:
         if args.config == 'baseline':
@@ -262,7 +326,9 @@ def main():
     else:
         raise ValueError("No config found in checkpoint and no --config provided")
 
-    device_pref = config.get('device', 'auto') if isinstance(config, dict) else 'auto'
+    device_pref = args.device if args.device is not None else (
+        config.get('device', 'auto') if isinstance(config, dict) else 'auto'
+    )
     device = resolve_device(device_pref)
     print(f"Using device: {device}")
     
@@ -289,23 +355,51 @@ def main():
     print(f"Dataset: {dataset_name}")
     print(f"Data root: {args.data_root}")
     print(f"Upscale: x{upscale}")
+    print(f"Chop patch size: {args.chop_patch_size}")
+    print(f"Chop overlap: {args.chop_overlap}")
     print(f"Crop border: {args.crop_border}")
     print(f"Save images: {args.save_images}")
     print("="*70)
     
     # Build test dataset (FULL IMAGE, FIXED TEST SPLIT)
-    test_dataset = HyperspectralTestDataset(
-        data_root=args.data_root,
-        split='test',  # ⭐ FIXED test split - NEVER seen during training
-        upscale=upscale,
-        split_seed=split_seed,
-        train_ratio=train_ratio,
-        val_ratio=val_ratio,
-        test_ratio=test_ratio,
-        force_regenerate_split=regenerate_split
-    )
+    try:
+        test_dataset = HyperspectralTestDataset(
+            data_root=args.data_root,
+            split='test',  # ⭐ FIXED test split - NEVER seen during training
+            upscale=upscale,
+            split_seed=split_seed,
+            train_ratio=train_ratio,
+            val_ratio=val_ratio,
+            test_ratio=test_ratio,
+            force_regenerate_split=regenerate_split
+        )
+    except ValueError as exc:
+        message = str(exc)
+        if "No images found for split 'test'" not in message:
+            raise
+        print("⚠️ Test split is empty. Falling back to split='train' for testing.")
+        test_dataset = HyperspectralTestDataset(
+            data_root=args.data_root,
+            split='train',
+            upscale=upscale,
+            split_seed=split_seed,
+            train_ratio=train_ratio,
+            val_ratio=val_ratio,
+            test_ratio=test_ratio,
+            force_regenerate_split=regenerate_split
+        )
 
     detected_num_bands = test_dataset.num_bands
+    if checkpoint_num_bands is not None and int(checkpoint_num_bands) != int(detected_num_bands):
+        raise ValueError(
+            "Checkpoint spectral bands do not match test dataset bands.\n"
+            f"  Checkpoint bands: {checkpoint_num_bands}\n"
+            f"  Test dataset bands: {detected_num_bands}\n"
+            f"  Checkpoint data_root: {checkpoint_data_root}\n"
+            f"  Requested data_root: {args.data_root}\n"
+            "Use a checkpoint trained on the same spectral band count as the test dataset."
+        )
+
     config_num_bands = config.get('num_spectral_bands') if isinstance(config, dict) else None
     if config_num_bands != detected_num_bands:
         print(
@@ -353,14 +447,36 @@ def main():
     save_dir = os.path.join(output_dir, 'images') if args.save_images else None
     try:
         # Run test
-        avg_metrics, per_image_results = test_full_image(
-            model=model,
-            dataloader=test_loader,
-            scale=upscale,
-            device=device,
-            crop_border=args.crop_border,
-            save_dir=save_dir
-        )
+        try:
+            avg_metrics, per_image_results = test_full_image(
+                model=model,
+                dataloader=test_loader,
+                scale=upscale,
+                device=device,
+                crop_border=args.crop_border,
+                save_dir=save_dir,
+                chop_patch_size=args.chop_patch_size,
+                chop_overlap=args.chop_overlap
+            )
+        except RuntimeError as runtime_err:
+            if device.type != "mps":
+                raise
+            print("\n⚠️ MPS runtime error detected during inference. Falling back to CPU and retrying...")
+            print(f"   Error: {str(runtime_err).splitlines()[0]}")
+            if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
+                torch.mps.empty_cache()
+            device = torch.device("cpu")
+            model = model.to(device)
+            avg_metrics, per_image_results = test_full_image(
+                model=model,
+                dataloader=test_loader,
+                scale=upscale,
+                device=device,
+                crop_border=args.crop_border,
+                save_dir=save_dir,
+                chop_patch_size=args.chop_patch_size,
+                chop_overlap=args.chop_overlap
+            )
 
         total_runtime_sec = time.time() - script_start
         
