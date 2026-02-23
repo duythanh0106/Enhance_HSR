@@ -629,6 +629,9 @@ Enhance_HSR/
 │   ├── __init__.py
 │   ├── dataset.py                         # Train/test datasets + auto band detect
 │   ├── splits.py                          # split.json generation/loading
+│   ├── CAVE/
+│   │   ├── complete_ms_data/
+│   │   └── split.json
 │   ├── Harvard/
 │   │   ├── *.mat
 │   │   ├── split.json
