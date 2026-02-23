@@ -607,36 +607,69 @@ Reconstructed images được save tại `test_results/` hoặc `inference_resul
 ## 📁 Cấu Trúc Project
 
 ```
-hyperspectral-sr/
+Enhance_HSR/
+├── README.md
+├── .gitignore
+├── requirements.txt
+├── config.py                              # Config classes + dataset/split settings
+├── train.py                               # Training entrypoint
+├── evaluate.py                            # Evaluation script (results/)
+├── test_full_image.py                     # Full-image test script (test_results/)
 │
-├── models/                              # Model architectures
+├── models/
 │   ├── __init__.py
-│   ├── essa_original.py                 # ESSA baseline
-│   ├── essa_improved.py                 # ESSA + SSAM
-│   ├── essa_ssam_spectrans.py          # ESSA + SSAM + SpecTrans ⭐
-│   ├── spatial_spectral_attention.py   # SSAM module
-│   └── spectral_transformer.py         # Spectral Transformer module
+│   ├── factory.py                         # Unified model builder + ckpt compatibility loader
+│   ├── essa_original.py                   # ESSA baseline
+│   ├── essa_improved.py                   # ESSA + SSAM
+│   ├── essa_ssam_spectrans.py             # ESSA + SSAM + Spectral Transformer
+│   ├── spatial_spectral_attention.py      # SSAM module
+│   └── spectral_transformer.py            # Spectral Transformer blocks
 │
-├── data/                                # Dataset handling
+├── data/
 │   ├── __init__.py
-│   ├── dataset.py                      # Dataset classes
-│   └── splits.py                       # Train/val/test splits
+│   ├── dataset.py                         # Train/test datasets + auto band detect
+│   ├── splits.py                          # split.json generation/loading
+│   ├── Harvard/
+│   │   ├── *.mat
+│   │   ├── split.json
+│   │   └── README.txt, calib.txt
+│   ├── Chikusei/
+│   │   ├── HyperspecVNIR_Chikusei_20140729.mat
+│   │   ├── HyperspecVNIR_Chikusei_20140729_Ground_Truth.mat
+│   │   └── split.json
+│   └── PaviaCentre/
+│       ├── Pavia.mat
+│       └── Pavia_gt.mat
 │
-├── utils/                               # Utilities (if needed)
-│   └── __init__.py
+├── utils/
+│   ├── __init__.py
+│   ├── device.py                          # auto device: cuda/mps/cpu
+│   ├── losses.py
+│   ├── metrics.py
+│   └── visualization.py
 │
-├── config.py                           # Configuration classes
-├── train.py                            # Training script
-├── evaluate.py                         # Evaluation script
-├── test_full_image.py                  # Full-image test (paper-style)
-├── requirements.txt                    # Python dependencies
-│
-├── checkpoints/                        # Saved models (created during training)
-├── logs/                               # Training logs (created during training)
-├── test_results/                       # Test results (created during testing)
-│
-└── README.md                           # This file
+├── checkpoints/                           # Saved checkpoints by experiment
+│   └── <experiment_name>/
+│       ├── best.pth
+│       ├── latest.pth
+│       └── epoch_*.pth
+├── logs/                                  # Training logs by experiment
+│   └── <experiment_name>/training.log
+├── results/                               # evaluate.py outputs
+│   └── <experiment_name>/
+│       ├── evaluation_results.json
+│       ├── summary.txt
+│       └── *_SR.npy / *_SR_RGB.png
+└── test_results/                          # test_full_image.py outputs
+    └── test_<timestamp>/
+        ├── test_results.json
+        ├── summary.txt
+        └── images/
 ```
+
+Ghi chú:
+- Không liệt kê các thư mục môi trường cục bộ như `.venv/`, `venv/`, `__pycache__/`, `.git/`.
+- Một số thư mục output có thể rỗng nếu run bị dừng giữa chừng và sẽ được script cleanup khi có thể.
 
 ---
 
