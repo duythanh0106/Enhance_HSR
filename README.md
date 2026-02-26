@@ -111,7 +111,7 @@ class SpatialSpectralAttention(nn.Module):
     """
 ```
 
-**Complexity:** O(C² + HW) - efficient!
+**Complexity (theo code hiện tại):** O(C·HW + C²) - efficient hơn nhiều so với spatial self-attention toàn ảnh.
 
 #### 2. Spectral Transformer
 
@@ -530,7 +530,7 @@ Dataset label được tự suy ra từ tên folder `data_root` (ví dụ `./dat
 
 **Performance note (vì sao test có thể nhanh hơn nhiều):**
 - Tiền xử lý downsample trong dataset đã được vectorize (thay cho loop pixel/band).
-- Spectral attention hiện chạy theo hướng `O(C^2 * HW)` thay vì kiểu spatial-token rất nặng trước đó.
+- Spectral Transformer attention hiện chạy theo hướng `O(C^2 * HW)` thay vì kiểu spatial-token rất nặng trước đó.
 - Vì vậy thời gian test có thể giảm mạnh giữa các phiên bản code; hãy so sánh thời gian trên cùng commit để công bằng.
 
 ### Comprehensive Evaluation
@@ -683,7 +683,7 @@ Ghi chú:
 **Innovation:**
 - Tách biệt spatial và spectral processing
 - 3 fusion strategies (sequential, parallel, adaptive)
-- Efficient O(C² + HW) complexity
+- Efficient O(C·HW + C²) complexity
 
 **vs Traditional Attention:**
 - Traditional: Channel-wise attention chung chung
