@@ -152,6 +152,22 @@ class CombinedLoss(nn.Module):
         self.l1_loss = L1Loss()
         self.sam_loss = SAMLoss()
         self.ssim_loss = SSIMLoss()
+
+    def set_weights(self, lambda_l1=None, lambda_sam=None, lambda_ssim=None):
+        """Update loss weights during training (for staged scheduling)."""
+        if lambda_l1 is not None:
+            self.lambda_l1 = float(lambda_l1)
+        if lambda_sam is not None:
+            self.lambda_sam = float(lambda_sam)
+        if lambda_ssim is not None:
+            self.lambda_ssim = float(lambda_ssim)
+
+    def get_weights(self):
+        return {
+            'lambda_l1': float(self.lambda_l1),
+            'lambda_sam': float(self.lambda_sam),
+            'lambda_ssim': float(self.lambda_ssim),
+        }
     
     def forward(self, pred, target):
         """

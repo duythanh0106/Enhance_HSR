@@ -51,11 +51,17 @@ class Config:
         self.patch_size = 64  # Kích thước patch để crop (64, 128, 256)
         self.num_epochs = 1000  # Số epochs
         self.num_workers = 4  # Số workers cho DataLoader
+        # Virtual samples/epoch (0 = tắt, dùng số ảnh thật của split)
+        self.train_virtual_samples_per_epoch = 0
+        self.val_virtual_samples_per_epoch = 0
+        self.gradient_clip_norm = 1.0  # 0 hoặc <0 để tắt gradient clipping
         
         # Learning rate
         self.learning_rate = 2e-4
         self.lr_scheduler = 'cosine'  # 'cosine', 'step', 'plateau'
         self.lr_min = 1e-6  # Min learning rate (cho cosine scheduler)
+        self.warmup_epochs = 0  # 0 = tắt warmup
+        self.warmup_start_lr = 1e-6
         
         # Optimizer
         self.optimizer = 'adam'  # 'adam' hoặc 'adamw'
@@ -71,6 +77,12 @@ class Config:
         self.lambda_l1 = 1.0
         self.lambda_sam = 0.1
         self.lambda_ssim = 0.5
+        # Two-phase schedule for CombinedLoss (ổn định đầu train, tăng spectral/structure sau)
+        self.use_two_phase_loss = False
+        self.loss_phase1_ratio = 0.4  # % đầu training ở phase 1
+        self.loss_phase1_sam_scale = 0.35
+        self.loss_phase1_ssim_scale = 0.25
+        self.loss_phase_transition_epochs = 20  # 0 = đổi phase đột ngột
         
         # ============================================================
         # DATA AUGMENTATION
@@ -82,6 +94,19 @@ class Config:
         # ============================================================
         self.validate_every = 1  # Validate mỗi N epochs
         self.save_checkpoint_every = 10  # Save checkpoint mỗi N epochs
+        # Best checkpoint selection
+        self.best_selection_metric = 'psnr'  # 'psnr' hoặc 'composite'
+        self.best_score_weights = {
+            'psnr': 0.45,
+            'ssim': 0.25,
+            'sam': 0.20,
+            'ergas': 0.10,
+        }
+        self.best_score_refs = {
+            'psnr': 50.0,   # normalize PSNR về [0,1]
+            'sam': 10.0,    # càng nhỏ càng tốt
+            'ergas': 20.0,  # càng nhỏ càng tốt
+        }
         
         # Output naming
         self.timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -92,6 +117,8 @@ class Config:
         # ============================================================
         self.log_interval = 10  # Log mỗi N iterations
         self.save_images = True  # Lưu sample images khi validate
+        self.use_ema = False  # Exponential Moving Average for eval/checkpoint
+        self.ema_decay = 0.999
         
         # ============================================================
         # RESUME TRAINING
@@ -151,8 +178,16 @@ class Config:
         print(f"  Batch Size: {self.batch_size}")
         print(f"  Patch Size: {self.patch_size}")
         print(f"  Epochs: {self.num_epochs}")
+        print(f"  Train Virtual Samples/Epoch: {self.train_virtual_samples_per_epoch}")
+        print(f"  Val Virtual Samples/Epoch: {self.val_virtual_samples_per_epoch}")
+        print(f"  Grad Clip Norm: {self.gradient_clip_norm}")
         print(f"  Learning Rate: {self.learning_rate}")
+        print(f"  Warmup Epochs: {self.warmup_epochs}")
+        print(f"  Warmup Start LR: {self.warmup_start_lr}")
         print(f"  LR Scheduler: {self.lr_scheduler}")
+        print(f"  Use EMA: {self.use_ema}")
+        if self.use_ema:
+            print(f"  EMA Decay: {self.ema_decay}")
         
         print("\n💡 Loss Settings:")
         print(f"  Loss Type: {self.loss_type}")
@@ -160,6 +195,22 @@ class Config:
             print(f"  λ_L1: {self.lambda_l1}")
             print(f"  λ_SAM: {self.lambda_sam}")
             print(f"  λ_SSIM: {self.lambda_ssim}")
+            print(f"  Two-Phase Loss: {self.use_two_phase_loss}")
+            if self.use_two_phase_loss:
+                print(f"  Phase1 Ratio: {self.loss_phase1_ratio}")
+                print(f"  Phase1 SAM Scale: {self.loss_phase1_sam_scale}")
+                print(f"  Phase1 SSIM Scale: {self.loss_phase1_ssim_scale}")
+                print(f"  Phase Transition Epochs: {self.loss_phase_transition_epochs}")
+
+        print("\n🏆 Best Checkpoint Selection:")
+        print(f"  Metric Mode: {self.best_selection_metric}")
+        if self.best_selection_metric == 'composite':
+            w_psnr = self.best_score_weights.get('psnr', 0.45)
+            w_ssim = self.best_score_weights.get('ssim', 0.25)
+            w_sam = self.best_score_weights.get('sam', 0.20)
+            w_ergas = self.best_score_weights.get('ergas', 0.10)
+            print(f"  Weights (PSNR/SSIM/SAM/ERGAS): "
+                  f"{w_psnr}/{w_ssim}/{w_sam}/{w_ergas}")
         
         print("\n📁 Output Settings:")
         print(f"  Experiment: {self.experiment_name}")
@@ -232,11 +283,81 @@ class ConfigLightweight(Config):
     def __init__(self):
         super().__init__()
         self.model_name = 'ESSA_SSAM'
-        self.feature_dim = 64  # Giảm feature dim
+        self.feature_dim = 128  # Giảm feature dim
         self.batch_size = 8
         self.patch_size = 64
         self.fusion_mode = 'sequential'
         self.refresh_output_paths()
+
+
+class ConfigUniversalBest(ConfigSpecTrans):
+    """
+    Config khuyến nghị để train ổn trên cả dataset nhiều ảnh (Harvard/CAVE)
+    và dataset 1 ảnh lớn (Chikusei/Pavia).
+    """
+    def __init__(self):
+        super().__init__()
+
+        # Common robust defaults
+        self.optimizer = 'adamw'
+        self.weight_decay = 1e-4
+        self.learning_rate = 1e-4
+        self.lr_min = 1e-7
+        self.batch_size = 1
+        self.patch_size = 64
+        self.num_epochs = 400
+        self.use_augmentation = True
+        self.train_virtual_samples_per_epoch = 0
+        self.val_virtual_samples_per_epoch = 0
+        self.gradient_clip_norm = 1.0
+        self.use_ema = True
+        self.ema_decay = 0.999
+        self.warmup_epochs = 10
+        self.warmup_start_lr = 1e-6
+        self.use_two_phase_loss = True
+        self.loss_phase1_ratio = 0.4
+        self.loss_phase1_sam_scale = 0.3
+        self.loss_phase1_ssim_scale = 0.25
+        self.loss_phase_transition_epochs = 20
+        self.best_selection_metric = 'composite'
+        self.best_score_weights = {
+            'psnr': 0.45,
+            'ssim': 0.25,
+            'sam': 0.20,
+            'ergas': 0.10,
+        }
+
+        self.apply_dataset_profile()
+        self.refresh_output_paths()
+
+    def apply_dataset_profile(self):
+        dataset_key = infer_dataset_name(self.data_root).lower()
+        is_single_scene = ('chikusei' in dataset_key) or ('pavia' in dataset_key)
+
+        if is_single_scene:
+            # 1-scene datasets cần nhiều patch/epoch để học ổn định.
+            self.train_virtual_samples_per_epoch = 4000
+            self.val_virtual_samples_per_epoch = 512
+            self.num_epochs = 600
+            self.patch_size = 64
+            self.batch_size = 1
+            self.num_workers = 0
+            self.warmup_epochs = 20
+            self.ema_decay = 0.9995
+            self.loss_phase1_ratio = 0.5
+            self.loss_phase_transition_epochs = 30
+        else:
+            # Multi-scene datasets thường không cần virtual sampling.
+            self.train_virtual_samples_per_epoch = 0
+            self.val_virtual_samples_per_epoch = 0
+            self.num_epochs = 1000
+            self.patch_size = 64
+            self.batch_size = 1
+            self.num_workers = 4
+            self.warmup_epochs = 10
+            self.ema_decay = 0.999
+            self.loss_phase1_ratio = 0.35
+            self.loss_phase_transition_epochs = 15
 
 
 # Test code

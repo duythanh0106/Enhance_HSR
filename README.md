@@ -300,7 +300,13 @@ Nếu chưa activate venv, dùng `./.venv/bin/python` thay cho `python3`.
 python3 train.py --config spectrans --data_root <DATA_ROOT>
 ```
 
-`--config` hỗ trợ: `default`, `baseline`, `proposed`, `spectrans`, `lightweight`.
+`--config` hỗ trợ: `default`, `baseline`, `proposed`, `spectrans`, `lightweight`, `universal_best`.
+
+Preset khuyên dùng để train ổn trên cả Harvard/CAVE và Chikusei/Pavia:
+
+```bash
+python3 train.py --config universal_best --data_root <DATA_ROOT>
+```
 
 ### Train theo từng dataset
 
@@ -358,6 +364,118 @@ learning_rate = 2e-4
 lr_scheduler = 'cosine'
 ```
 
+**ConfigUniversalBest (khuyên dùng đa dataset):**
+```python
+model_name = 'ESSA_SSAM_SpecTrans'
+optimizer = 'adamw'
+weight_decay = 1e-4
+learning_rate = 1e-4
+patch_size = 64
+batch_size = 1
+gradient_clip_norm = 1.0
+use_ema = True
+ema_decay = 0.999
+warmup_epochs = 10
+warmup_start_lr = 1e-6
+use_two_phase_loss = True
+loss_phase1_ratio = 0.4
+loss_phase1_sam_scale = 0.3
+loss_phase1_ssim_scale = 0.25
+best_selection_metric = 'composite'
+num_epochs = 400  # profile multi-scene (Harvard/CAVE)
+
+# Tự chuyển profile khi dataset là single-scene (Chikusei/Pavia)
+train_virtual_samples_per_epoch = 4000
+val_virtual_samples_per_epoch = 512
+num_epochs = 600  # profile single-scene
+```
+
+### Hyperparameter Tuning (Optuna)
+
+```bash
+# Cài thêm (nếu chưa có)
+pip install optuna
+
+# Tune cho Harvard/CAVE
+python3 tune_optuna.py --config universal_best --data_root ./data/Harvard --trials 20 --epochs 120
+
+# Tune cho Chikusei/Pavia (single-scene)
+python3 tune_optuna.py --config universal_best --data_root ./data/Chikusei --trials 12 --epochs 80
+```
+
+### Seed Sweep (chọn seed tốt hơn, giữ split cố định)
+
+```bash
+# Quét seed, xếp hạng theo full-image validation (khuyên dùng)
+python3 seed_sweep.py \
+  --config universal_best \
+  --data_root ./data/Harvard \
+  --seeds 7,11,19,23,29 \
+  --split_seed 42 \
+  --epochs 100 \
+  --num_workers 0 \
+  --selection_mode full_image_val \
+  --best_selection_metric psnr
+
+# Nếu muốn sweep nhanh theo patch-val
+python3 seed_sweep.py \
+  --config universal_best \
+  --data_root ./data/Harvard \
+  --seeds 7,11,19 \
+  --epochs 80 \
+  --num_workers 0 \
+  --selection_mode patch_val
+```
+
+Kết quả sweep được lưu tại `seed_sweep_results/<sweep_timestamp>/` gồm:
+- `summary.txt`
+- `seed_sweep_results.csv`
+- `seed_sweep_results.json`
+- `seed_sweep_meta.json`
+
+`summary.txt` sẽ có:
+- thời gian từng seed (`seed_time`)
+- `Total sweep time` cho toàn bộ lượt chạy
+- `Avg time/seed`
+
+#### Hướng dẫn dùng `seed_sweep` (chi tiết)
+
+1. Giữ cố định `--split_seed` để không thay đổi tập train/val/test giữa các seed.
+2. Quét nhanh nhiều seed với `--epochs 100` để tiết kiệm thời gian.
+3. Chọn seed có `rank_score` cao nhất trong `summary.txt`.
+4. Test checkpoint tốt nhất của seed đó bằng `test_full_image.py`.
+
+Ví dụ test sau khi sweep:
+
+```bash
+python3 test_full_image.py \
+  --checkpoint ./checkpoints/ESSA_SSAM_SpecTrans_Harvard_x4_sweep_YYYYMMDD_HHMMSS_seed7/best.pth \
+  --data_root ./data/Harvard \
+  --save_images
+```
+
+Ghi chú:
+- `selection_mode=full_image_val` bám sát protocol test hơn `patch_val`.
+- Nếu thời gian hạn chế, có thể sweep 3 seed trước: `--seeds 7,11,19`.
+
+### Quy trình khi KHÔNG dùng `seed_sweep`
+
+Nếu không muốn sweep seed, dùng quy trình 1-run chuẩn:
+
+```bash
+# 1) Train 1 run
+python3 train.py --config universal_best --data_root ./data/Harvard
+
+# 2) Test full-image
+python3 test_full_image.py \
+  --checkpoint ./checkpoints/<experiment_name>/best.pth \
+  --data_root ./data/Harvard \
+  --save_images
+```
+
+Khuyến nghị tối thiểu để ổn định:
+- chạy 2-3 run độc lập (đổi `seed` trong `config.py`) rồi chọn model tốt nhất theo val/test protocol của bạn.
+
 ### Training Output
 
 ```
@@ -382,6 +500,7 @@ Validating: 100%|████████| 8/8 [00:02<00:00, 3.55it/s]
 
 Training Completed!
 Best PSNR: 37.53 dB
+Best Score (COMPOSITE): 0.812345 (epoch 88)
 Total Training Time: 00:38:12 (2292.44 seconds)
 ```
 
@@ -391,7 +510,7 @@ Checkpoints được lưu tại:
 ```
 checkpoints/
 └── ESSA_SSAM_SpecTrans_CAVE_x4_20240117_143022/
-    ├── best.pth          # Best validation PSNR
+    ├── best.pth          # Best checkpoint theo best_selection_metric
     ├── latest.pth        # Latest checkpoint
     └── epoch_50.pth      # Periodic saves
 ```

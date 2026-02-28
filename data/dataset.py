@@ -134,7 +134,7 @@ class HyperspectralDataset(Dataset):
     def __init__(self, data_root, patch_size=128,
                  upscale=4, augment=True, split='train',
                  split_seed=42, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1,
-                 force_regenerate_split=False):
+                 force_regenerate_split=False, virtual_samples_per_epoch=0):
 
         self.data_root = data_root
         self.patch_size = patch_size
@@ -146,6 +146,7 @@ class HyperspectralDataset(Dataset):
         self.val_ratio = val_ratio
         self.test_ratio = test_ratio
         self.force_regenerate_split = force_regenerate_split
+        self.virtual_samples_per_epoch = max(0, int(virtual_samples_per_epoch or 0))
 
         # --------------------------------------------------
         # Create split if not exists
@@ -184,6 +185,11 @@ class HyperspectralDataset(Dataset):
         self.num_bands = sample.shape[2]
         print(f"Detected {self.num_bands} spectral bands.")
         print(f"Loaded {len(self.image_paths)} images for split '{self.split}'.")
+        if self.virtual_samples_per_epoch > 0:
+            print(
+                f"Using virtual samples per epoch for split '{self.split}': "
+                f"{self.virtual_samples_per_epoch}"
+            )
 
     # ------------------------------------------------------
 
@@ -265,16 +271,18 @@ class HyperspectralDataset(Dataset):
     # ------------------------------------------------------
 
     def __len__(self):
+        if self.virtual_samples_per_epoch > 0:
+            return self.virtual_samples_per_epoch
         return len(self.image_paths)
 
     # ------------------------------------------------------
 
     def __getitem__(self, idx):
-
-        img = self._load_hyperspectral_image(self.image_paths[idx])
+        real_idx = idx % len(self.image_paths)
+        img = self._load_hyperspectral_image(self.image_paths[real_idx])
 
         if img is None:
-            bad_path = self.image_paths[idx]
+            bad_path = self.image_paths[real_idx]
             raise RuntimeError(
                 f"Failed to load hyperspectral image: {bad_path}. "
                 "Please verify the .mat file integrity and keys."
