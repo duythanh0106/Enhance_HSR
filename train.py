@@ -12,25 +12,29 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 import numpy as np
 
-from config import (
-    Config,
-    ConfigBaseline,
-    ConfigProposed,
-    ConfigLightweight,
-    ConfigSpecTrans,
-    ConfigUniversalBest,
-)
-from data.dataset import HyperspectralDataset
+from config import CONFIG_PRESET_CHOICES, build_config
+from data.dataset import HyperspectralDataset, build_split_kwargs, load_dataset_with_fallback
 from models.factory import build_model_from_config, load_state_dict_compat
 from utils.metrics import MetricsCalculator
 from utils.losses import L1Loss, L2Loss, CombinedLoss, AdaptiveCombinedLoss
 from utils.device import resolve_device
+from utils.scoring import compute_selection_score_from_config
+from utils.time_utils import format_duration
 
 
 class ModelEMA:
     """EMA tracker cho tham số model, dùng cho validation/checkpoint ổn định hơn."""
 
     def __init__(self, model, decay=0.999):
+        """Initialize the `ModelEMA` instance.
+
+        Args:
+            model: Input parameter `model`.
+            decay: Input parameter `decay`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         self.decay = float(decay)
         self.shadow = {
             name: param.detach().clone()
@@ -40,6 +44,14 @@ class ModelEMA:
         self.backup = None
 
     def update(self, model):
+        """Execute `update`.
+
+        Args:
+            model: Input parameter `model`.
+
+        Returns:
+            None: This function returns no value.
+        """
         one_minus_decay = 1.0 - self.decay
         for name, param in model.named_parameters():
             if not param.requires_grad:
@@ -47,6 +59,14 @@ class ModelEMA:
             self.shadow[name].mul_(self.decay).add_(param.detach(), alpha=one_minus_decay)
 
     def apply_shadow(self, model):
+        """Execute `apply_shadow`.
+
+        Args:
+            model: Input parameter `model`.
+
+        Returns:
+            None: This function returns no value.
+        """
         self.backup = {}
         for name, param in model.named_parameters():
             if not param.requires_grad:
@@ -55,6 +75,14 @@ class ModelEMA:
             param.data.copy_(self.shadow[name])
 
     def restore(self, model):
+        """Execute `restore`.
+
+        Args:
+            model: Input parameter `model`.
+
+        Returns:
+            None: This function returns no value.
+        """
         if self.backup is None:
             return
         for name, param in model.named_parameters():
@@ -63,12 +91,28 @@ class ModelEMA:
         self.backup = None
 
     def state_dict(self):
+        """Execute `state_dict`.
+
+        Args:
+            None.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         return {
             'decay': self.decay,
             'shadow': {k: v.detach().clone() for k, v in self.shadow.items()},
         }
 
     def load_state_dict(self, state):
+        """Execute `load_state_dict`.
+
+        Args:
+            state: Input parameter `state`.
+
+        Returns:
+            None: This function returns no value.
+        """
         self.decay = float(state.get('decay', self.decay))
         loaded_shadow = state.get('shadow', {})
         if loaded_shadow:
@@ -79,12 +123,21 @@ class Trainer:
     """Trainer class cho training và validation"""
     
     def __init__(self, config):
+        """Initialize the `Trainer` instance.
+
+        Args:
+            config: Input parameter `config`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         self.config = config
 
         self.device = resolve_device(config.device)
         self.use_amp = bool(config.mixed_precision and self.device.type == 'cuda')
         self.scaler = torch.amp.GradScaler('cuda', enabled=self.use_amp)
         self.log_file = None
+        self._device_runtime_logged = False
 
     
         # Set random seed
@@ -114,6 +167,7 @@ class Trainer:
         self.best_psnr = 0.0
         self.best_score = float('-inf')
         self.best_epoch = 0
+        self.no_improve_validations = 0
         self.train_losses = []
         self.val_metrics = []
         
@@ -122,7 +176,14 @@ class Trainer:
             self.load_checkpoint(config.resume_checkpoint)
     
     def set_seed(self, seed):
-        """Set random seed for reproducibility"""
+        """Execute `set_seed`.
+
+        Args:
+            seed: Input parameter `seed`.
+
+        Returns:
+            None: This function returns no value.
+        """
         torch.manual_seed(seed)
         
         if torch.cuda.is_available():
@@ -131,10 +192,26 @@ class Trainer:
         np.random.seed(seed)
 
     def _set_learning_rate(self, lr):
+        """Internal helper for `set_learning_rate` operations.
+
+        Args:
+            lr: Input parameter `lr`.
+
+        Returns:
+            None: This function returns no value.
+        """
         for param_group in self.optimizer.param_groups:
             param_group['lr'] = float(lr)
 
     def _apply_warmup(self, epoch):
+        """Internal helper for `apply_warmup` operations.
+
+        Args:
+            epoch: Input parameter `epoch`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         warmup_epochs = int(getattr(self.config, 'warmup_epochs', 0))
         if warmup_epochs <= 0:
             return False
@@ -154,15 +231,26 @@ class Trainer:
 
     @staticmethod
     def format_duration(seconds):
-        total = int(seconds)
-        h, rem = divmod(total, 3600)
-        m, s = divmod(rem, 60)
-        if h > 0:
-            return f"{h:02d}:{m:02d}:{s:02d}"
-        return f"{m:02d}:{s:02d}"
+        """Execute `format_duration`.
+
+        Args:
+            seconds: Input parameter `seconds`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
+        return format_duration(seconds)
 
     @staticmethod
     def _remove_dir_if_effectively_empty(path):
+        """Internal helper for `remove_dir_if_effectively_empty` operations.
+
+        Args:
+            path: Input parameter `path`.
+
+        Returns:
+            None: This function returns no value.
+        """
         if not os.path.isdir(path):
             return
         entries = [e for e in os.listdir(path) if e != '.DS_Store']
@@ -173,6 +261,14 @@ class Trainer:
             os.rmdir(path)
 
     def cleanup_empty_outputs(self):
+        """Execute `cleanup_empty_outputs`.
+
+        Args:
+            None.
+
+        Returns:
+            None: This function returns no value.
+        """
         if self.log_file is not None:
             self.log_file.close()
             self.log_file = None
@@ -181,10 +277,26 @@ class Trainer:
         self._remove_dir_if_effectively_empty(self.config.checkpoint_dir)
 
     def _ensure_output_dirs(self):
+        """Internal helper for `ensure_output_dirs` operations.
+
+        Args:
+            None.
+
+        Returns:
+            None: This function returns no value.
+        """
         os.makedirs(self.config.checkpoint_dir, exist_ok=True)
         os.makedirs(self.config.log_dir, exist_ok=True)
 
     def _open_log_file(self):
+        """Internal helper for `open_log_file` operations.
+
+        Args:
+            None.
+
+        Returns:
+            None: This function returns no value.
+        """
         self._ensure_output_dirs()
         if self.log_file is None:
             log_path = os.path.join(self.config.log_dir, 'training.log')
@@ -192,12 +304,70 @@ class Trainer:
             self.log_file.write("=== Training Log Started ===\n")
 
     def _log(self, message):
+        """Internal helper for `log` operations.
+
+        Args:
+            message: Input parameter `message`.
+
+        Returns:
+            None: This function returns no value.
+        """
         print(message)
         if self.log_file is not None:
             self.log_file.write(message + "\n")
+
+    def _log_runtime_device_snapshot(self, lr, hr, sr, loss):
+        """Internal helper for `log_runtime_device_snapshot` operations.
+
+        Args:
+            lr: Input parameter `lr`.
+            hr: Input parameter `hr`.
+            sr: Input parameter `sr`.
+            loss: Input parameter `loss`.
+
+        Returns:
+            None: This function returns no value.
+        """
+        if self._device_runtime_logged:
+            return
+        if not bool(getattr(self.config, 'log_device_runtime', True)):
+            return
+
+        model_device = next(self.model.parameters()).device
+        self._log(
+            "Runtime Device Check | "
+            f"model={model_device}, lr={lr.device}, hr={hr.device}, "
+            f"sr={sr.device}, loss={loss.device}"
+        )
+
+        if self.device.type == 'mps':
+            fallback_env = os.environ.get('PYTORCH_ENABLE_MPS_FALLBACK', '0 (default)')
+            self._log(f"MPS fallback env (PYTORCH_ENABLE_MPS_FALLBACK): {fallback_env}")
+            if hasattr(torch, 'mps') and hasattr(torch.mps, 'current_allocated_memory'):
+                try:
+                    allocated = torch.mps.current_allocated_memory()
+                    if hasattr(torch.mps, 'driver_allocated_memory'):
+                        driver_allocated = torch.mps.driver_allocated_memory()
+                        self._log(
+                            f"MPS memory | current_allocated={allocated} bytes, "
+                            f"driver_allocated={driver_allocated} bytes"
+                        )
+                    else:
+                        self._log(f"MPS memory | current_allocated={allocated} bytes")
+                except Exception:
+                    self._log("MPS memory stats unavailable on this PyTorch build.")
+
+        self._device_runtime_logged = True
     
     def build_model(self):
-        """Build model based on config"""
+        """Execute `build_model`.
+
+        Args:
+            None.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         model = build_model_from_config(self.config)
         model = model.to(self.device)
         
@@ -210,46 +380,46 @@ class Trainer:
         return model
     
     def build_dataloaders(self):
-        """Build train and validation dataloaders from split.json."""
+        """Execute `build_dataloaders`.
 
-        split_kwargs = {
-            "data_root": self.config.data_root,
-            "upscale": self.config.upscale_factor,
-            "split_seed": self.config.split_seed,
-            "train_ratio": self.config.train_ratio,
-            "val_ratio": self.config.val_ratio,
-            "test_ratio": self.config.test_ratio,
-            "force_regenerate_split": self.config.regenerate_split,
-        }
+        Args:
+            None.
+
+        Returns:
+            Any: Output produced by this function.
+        """
+
+        split_kwargs = build_split_kwargs(
+            upscale=self.config.upscale_factor,
+            split_seed=self.config.split_seed,
+            train_ratio=self.config.train_ratio,
+            val_ratio=self.config.val_ratio,
+            test_ratio=self.config.test_ratio,
+            force_regenerate_split=self.config.regenerate_split,
+        )
 
         train_dataset = HyperspectralDataset(
+            data_root=self.config.data_root,
             patch_size=self.config.patch_size,
             augment=self.config.use_augmentation,
             split='train',
             virtual_samples_per_epoch=self.config.train_virtual_samples_per_epoch,
+            cache_in_memory=bool(getattr(self.config, 'cache_in_memory', False)),
             **split_kwargs
         )
 
-        try:
-            val_dataset = HyperspectralDataset(
-                patch_size=self.config.patch_size,
-                augment=False,
-                split='val',
-                virtual_samples_per_epoch=self.config.val_virtual_samples_per_epoch,
-                **split_kwargs
-            )
-        except ValueError as exc:
-            message = str(exc)
-            if "No images found for split 'val'" not in message:
-                raise
-            self._log("⚠️ Validation split is empty. Falling back to split='train' for validation.")
-            val_dataset = HyperspectralDataset(
-                patch_size=self.config.patch_size,
-                augment=False,
-                split='train',
-                virtual_samples_per_epoch=self.config.val_virtual_samples_per_epoch,
-                **split_kwargs
-            )
+        val_dataset, _ = load_dataset_with_fallback(
+            dataset_cls=HyperspectralDataset,
+            primary_split='val',
+            fallback_split='train',
+            log_fn=self._log,
+            data_root=self.config.data_root,
+            patch_size=self.config.patch_size,
+            augment=False,
+            virtual_samples_per_epoch=self.config.val_virtual_samples_per_epoch,
+            cache_in_memory=bool(getattr(self.config, 'cache_in_memory', False)),
+            **split_kwargs,
+        )
 
         # Sync config with detected number of spectral bands
         if self.config.num_spectral_bands != train_dataset.num_bands:
@@ -299,7 +469,14 @@ class Trainer:
         return train_loader, val_loader
     
     def build_optimizer(self):
-        """Build optimizer"""
+        """Execute `build_optimizer`.
+
+        Args:
+            None.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         if self.config.optimizer.lower() == 'adam':
             optimizer = optim.Adam(
                 self.model.parameters(),
@@ -320,7 +497,14 @@ class Trainer:
         return optimizer
     
     def build_scheduler(self):
-        """Build learning rate scheduler"""
+        """Execute `build_scheduler`.
+
+        Args:
+            None.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         if self.config.lr_scheduler == 'cosine':
             scheduler = optim.lr_scheduler.CosineAnnealingLR(
                 self.optimizer,
@@ -346,7 +530,14 @@ class Trainer:
         return scheduler
     
     def build_loss(self):
-        """Build loss function"""
+        """Execute `build_loss`.
+
+        Args:
+            None.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         if self.config.loss_type == 'l1':
             criterion = L1Loss()
         elif self.config.loss_type == 'l2':
@@ -364,15 +555,14 @@ class Trainer:
         
         return criterion
 
-    @staticmethod
-    def _clamp01(value):
-        return max(0.0, min(1.0, float(value)))
-
     def _get_two_phase_lambdas(self, epoch):
-        """
-        Return (lambda_l1, lambda_sam, lambda_ssim, phase_label) for current epoch.
-        Phase 1: prioritize stable pixel convergence.
-        Phase 2: increase spectral/structural regularization.
+        """Internal helper for `get_two_phase_lambdas` operations.
+
+        Args:
+            epoch: Input parameter `epoch`.
+
+        Returns:
+            Any: Output produced by this function.
         """
         target_l1 = float(self.config.lambda_l1)
         target_sam = float(self.config.lambda_sam)
@@ -401,9 +591,13 @@ class Trainer:
         return target_l1, sam, ssim, 'transition'
 
     def _apply_loss_schedule(self, epoch):
-        """
-        Dynamically adjust CombinedLoss weights during training.
-        Returns a tuple: (applied, phase_label, l1, sam, ssim)
+        """Internal helper for `apply_loss_schedule` operations.
+
+        Args:
+            epoch: Input parameter `epoch`.
+
+        Returns:
+            Any: Output produced by this function.
         """
         if self.config.loss_type != 'combined':
             return False, 'static', None, None, None
@@ -417,37 +611,69 @@ class Trainer:
         return True, phase, l1, sam, ssim
 
     def compute_selection_score(self, metrics):
-        """Compute score used to determine best checkpoint."""
-        mode = str(getattr(self.config, 'best_selection_metric', 'psnr')).lower()
-        if mode == 'psnr':
-            return float(metrics['PSNR'])
+        """Execute `compute_selection_score`.
 
-        weights = getattr(self.config, 'best_score_weights', {}) or {}
-        refs = getattr(self.config, 'best_score_refs', {}) or {}
-        w_psnr = float(weights.get('psnr', 0.45))
-        w_ssim = float(weights.get('ssim', 0.25))
-        w_sam = float(weights.get('sam', 0.20))
-        w_ergas = float(weights.get('ergas', 0.10))
+        Args:
+            metrics: Input parameter `metrics`.
 
-        psnr_ref = float(refs.get('psnr', 50.0))
-        sam_ref = float(refs.get('sam', 10.0))
-        ergas_ref = float(refs.get('ergas', 20.0))
+        Returns:
+            Any: Output produced by this function.
+        """
+        return compute_selection_score_from_config(metrics, self.config)
 
-        psnr_score = self._clamp01(float(metrics['PSNR']) / max(psnr_ref, 1e-6))
-        ssim_score = self._clamp01(float(metrics['SSIM']))
-        sam_score = self._clamp01(1.0 - float(metrics['SAM']) / max(sam_ref, 1e-6))
-        ergas_score = self._clamp01(1.0 - float(metrics['ERGAS']) / max(ergas_ref, 1e-6))
+    def _is_early_stopping_enabled(self):
+        """Internal helper for `is_early_stopping_enabled` operations.
 
-        composite = (
-            w_psnr * psnr_score
-            + w_ssim * ssim_score
-            + w_sam * sam_score
-            + w_ergas * ergas_score
-        )
-        return float(composite)
+        Args:
+            None.
+
+        Returns:
+            Any: Output produced by this function.
+        """
+        return bool(getattr(self.config, 'use_early_stopping', False))
+
+    def _early_stopping_patience(self):
+        """Internal helper for `early_stopping_patience` operations.
+
+        Args:
+            None.
+
+        Returns:
+            Any: Output produced by this function.
+        """
+        return max(1, int(getattr(self.config, 'early_stopping_patience', 1)))
+
+    def _early_stopping_start_epoch(self):
+        """Internal helper for `early_stopping_start_epoch` operations.
+
+        Args:
+            None.
+
+        Returns:
+            Any: Output produced by this function.
+        """
+        return max(0, int(getattr(self.config, 'early_stopping_start_epoch', 0)))
+
+    def _early_stopping_min_delta(self):
+        """Internal helper for `early_stopping_min_delta` operations.
+
+        Args:
+            None.
+
+        Returns:
+            Any: Output produced by this function.
+        """
+        return float(getattr(self.config, 'early_stopping_min_delta', 0.0))
     
     def train_epoch(self, epoch):
-        """Train for one epoch"""
+        """Execute `train_epoch`.
+
+        Args:
+            epoch: Input parameter `epoch`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         epoch_start = time.time()
         self.model.train()
         epoch_loss = 0.0
@@ -475,6 +701,9 @@ class Trainer:
                 else:
                     loss = self.criterion(sr, hr)
                     pbar.set_postfix({'loss': f"{loss.item():.4f}"})
+
+            if i == 0:
+                self._log_runtime_device_snapshot(lr, hr, sr, loss)
             
             # Backward pass
             if self.use_amp:
@@ -506,7 +735,14 @@ class Trainer:
         return avg_loss, train_time
     
     def validate(self):
-        """Validate the model"""
+        """Execute `validate`.
+
+        Args:
+            None.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         if self.ema is not None:
             self.ema.apply_shadow(self.model)
         try:
@@ -550,7 +786,17 @@ class Trainer:
                 self.ema.restore(self.model)
     
     def save_checkpoint(self, epoch, metrics, is_best=False, selection_score=None):
-        """Save model checkpoint"""
+        """Execute `save_checkpoint`.
+
+        Args:
+            epoch: Input parameter `epoch`.
+            metrics: Input parameter `metrics`.
+            is_best: Input parameter `is_best`.
+            selection_score: Input parameter `selection_score`.
+
+        Returns:
+            None: This function returns no value.
+        """
         self._ensure_output_dirs()
         checkpoint = {
             'epoch': epoch,
@@ -563,6 +809,7 @@ class Trainer:
             'best_psnr': self.best_psnr,
             'best_score': self.best_score,
             'best_epoch': self.best_epoch,
+            'no_improve_validations': self.no_improve_validations,
             'config': self.config.to_dict()
         }
         if self.ema is not None:
@@ -593,7 +840,14 @@ class Trainer:
             torch.save(checkpoint, epoch_path)
     
     def load_checkpoint(self, checkpoint_path):
-        """Load checkpoint to resume training"""
+        """Execute `load_checkpoint`.
+
+        Args:
+            checkpoint_path: Input parameter `checkpoint_path`.
+
+        Returns:
+            None: This function returns no value.
+        """
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
         
         _, converted_keys = load_state_dict_compat(
@@ -621,16 +875,32 @@ class Trainer:
         else:
             self.best_score = float('-inf')
         self.best_epoch = int(checkpoint.get('best_epoch', self.current_epoch))
+        self.no_improve_validations = int(checkpoint.get('no_improve_validations', 0))
         self._log(f"Resumed from epoch {self.current_epoch}")
     
     def train(self):
-        """Main training loop"""
+        """Execute `train`.
+
+        Args:
+            None.
+
+        Returns:
+            None: This function returns no value.
+        """
         self._open_log_file()
         self._log("\n" + "="*70)
         self._log("Starting Training")
         self._log("="*70)
+        if self._is_early_stopping_enabled():
+            self._log(
+                f"Early stopping enabled | patience={self._early_stopping_patience()} "
+                f"| min_delta={self._early_stopping_min_delta()} "
+                f"| start_epoch={self._early_stopping_start_epoch()}"
+            )
 
         training_start = time.time()
+        early_stop_triggered = False
+        early_stop_epoch = None
         try:
             for epoch in range(self.current_epoch + 1, self.config.num_epochs + 1):
                 epoch_start = time.time()
@@ -654,11 +924,16 @@ class Trainer:
 
                     # Save checkpoint
                     selection_score = self.compute_selection_score(val_metrics)
-                    is_best = selection_score > self.best_score
+                    min_delta = self._early_stopping_min_delta()
+                    is_best = selection_score > (self.best_score + min_delta)
                     if is_best:
                         self.best_score = selection_score
                         self.best_psnr = val_metrics['PSNR']
                         self.best_epoch = epoch
+                        self.no_improve_validations = 0
+                    else:
+                        if self._is_early_stopping_enabled() and epoch >= self._early_stopping_start_epoch():
+                            self.no_improve_validations += 1
                     
                     self.save_checkpoint(epoch, val_metrics, is_best, selection_score)
 
@@ -688,6 +963,11 @@ class Trainer:
                 self._log(f"  Train Time      : {self.format_duration(train_time)} ({train_time:.2f} seconds)")
                 if val_metrics is not None:
                     self._log(f"  Validate Time   : {self.format_duration(val_time)} ({val_time:.2f} seconds)")
+                    if self._is_early_stopping_enabled() and epoch >= self._early_stopping_start_epoch():
+                        self._log(
+                            f"  Early Stop Count: {self.no_improve_validations}/"
+                            f"{self._early_stopping_patience()}"
+                        )
                 self._log(f"  Epoch Total Time: {self.format_duration(epoch_total_time)} ({epoch_total_time:.2f} seconds)")
                 self._log("=" * 70 + "\n")
                 
@@ -698,6 +978,20 @@ class Trainer:
                     elif self.config.lr_scheduler != 'plateau' and not in_warmup:
                         self.scheduler.step()
 
+                if (
+                    val_metrics is not None
+                    and self._is_early_stopping_enabled()
+                    and epoch >= self._early_stopping_start_epoch()
+                    and self.no_improve_validations >= self._early_stopping_patience()
+                ):
+                    early_stop_triggered = True
+                    early_stop_epoch = epoch
+                    self._log(
+                        f"⏹ Early stopping triggered at epoch {epoch} "
+                        f"(no improvement for {self.no_improve_validations} validations)."
+                    )
+                    break
+
             total_train_time = time.time() - training_start
             best_ckpt_path = os.path.join(self.config.checkpoint_dir, 'best.pth')
             latest_ckpt_path = os.path.join(self.config.checkpoint_dir, 'latest.pth')
@@ -707,6 +1001,8 @@ class Trainer:
             self._log(f"Best PSNR: {self.best_psnr:.2f} dB")
             mode = str(getattr(self.config, 'best_selection_metric', 'psnr')).upper()
             self._log(f"Best Score ({mode}): {self.best_score:.6f} (epoch {self.best_epoch})")
+            if early_stop_triggered:
+                self._log(f"Stopped Early At Epoch: {early_stop_epoch}")
             self._log(f"Total Training Time: {self.format_duration(total_train_time)} ({total_train_time:.2f} seconds)")
             self._log("\nSaved Outputs:")
             self._log(f"  Checkpoint Dir : {self.config.checkpoint_dir}")
@@ -722,9 +1018,17 @@ class Trainer:
 
 def main():
     # Parse arguments
+    """Execute the main entry-point workflow.
+
+    Args:
+        None.
+
+    Returns:
+        None: This function returns no value.
+    """
     parser = argparse.ArgumentParser(description='Train Hyperspectral SR Model')
     parser.add_argument('--config', type=str, default='default',
-                       choices=['default', 'baseline', 'proposed', 'spectrans', 'lightweight', 'universal_best'],
+                       choices=CONFIG_PRESET_CHOICES,
                        help='Configuration preset')
     parser.add_argument('--data_root', type=str, default=None,
                        help='Override data root path')
@@ -734,18 +1038,7 @@ def main():
     args = parser.parse_args()
     
     # Load configuration
-    if args.config == 'baseline':
-        config = ConfigBaseline()
-    elif args.config == 'proposed':
-        config = ConfigProposed()
-    elif args.config == 'spectrans':
-        config = ConfigSpecTrans()
-    elif args.config == 'lightweight':
-        config = ConfigLightweight()
-    elif args.config == 'universal_best':
-        config = ConfigUniversalBest()
-    else:
-        config = Config()
+    config = build_config(args.config)
     
     # Override with command line arguments
     if args.data_root:

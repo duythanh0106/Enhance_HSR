@@ -13,6 +13,14 @@ np.random.seed(0)
 
 class Convdown(nn.Module):
     def __init__(self, dim):
+        """Initialize the `Convdown` instance.
+
+        Args:
+            dim: Input parameter `dim`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         super().__init__()
         self.patch_embed = PatchEmbed()
         self.patch_unembed = PatchUnEmbed(embed_dim=dim)
@@ -28,6 +36,14 @@ class Convdown(nn.Module):
         self.drop = nn.Dropout2d(0.2)
 
     def forward(self, x):
+        """Run the forward computation for this module.
+
+        Args:
+            x: Input parameter `x`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         shortcut = x
         x_size = (x.shape[2], x.shape[3])
         x_embed = self.patch_embed(x)
@@ -41,6 +57,14 @@ class Convdown(nn.Module):
 
 class Convup(nn.Module):
     def __init__(self, dim):
+        """Initialize the `Convup` instance.
+
+        Args:
+            dim: Input parameter `dim`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         super().__init__()
         self.patch_embed = PatchEmbed()
         self.patch_unembed = PatchUnEmbed(embed_dim=dim)
@@ -55,6 +79,14 @@ class Convup(nn.Module):
         self.attn = ESSAttn(dim)
 
     def forward(self, x):
+        """Run the forward computation for this module.
+
+        Args:
+            x: Input parameter `x`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         shortcut = x
         x_size = (x.shape[2], x.shape[3])
         x_embed = self.patch_embed(x)
@@ -68,6 +100,15 @@ class Convup(nn.Module):
 
 class blockup(nn.Module):
     def __init__(self, dim, upscale):
+        """Initialize the `blockup` instance.
+
+        Args:
+            dim: Input parameter `dim`.
+            upscale: Input parameter `upscale`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         super(blockup, self).__init__()
         self.convup = Convup(dim)
         self.convdown = Convdown(dim)
@@ -75,6 +116,14 @@ class blockup(nn.Module):
         self.convdownsample = Downsample(scale=upscale, num_feat=dim)
 
     def forward(self, x):
+        """Run the forward computation for this module.
+
+        Args:
+            x: Input parameter `x`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         xup = self.convupsample(x)
         x1 = self.convup(xup)
         xdown = self.convdownsample(x1) + x
@@ -90,20 +139,54 @@ class blockup(nn.Module):
 
 class PatchEmbed(nn.Module):
     def __init__(self):
+        """Initialize the `PatchEmbed` instance.
+
+        Args:
+            None.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         super().__init__()
 
     def forward(self, x):
+        """Run the forward computation for this module.
+
+        Args:
+            x: Input parameter `x`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         x = x.flatten(2).transpose(1, 2)
         return x
 
 
 class PatchUnEmbed(nn.Module):
     def __init__(self, in_chans=3, embed_dim=96):
+        """Initialize the `PatchUnEmbed` instance.
+
+        Args:
+            in_chans: Input parameter `in_chans`.
+            embed_dim: Input parameter `embed_dim`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         super().__init__()
         self.in_chans = in_chans
         self.embed_dim = embed_dim
 
     def forward(self, x, x_size):
+        """Run the forward computation for this module.
+
+        Args:
+            x: Input parameter `x`.
+            x_size: Input parameter `x_size`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         B, HW, C = x.shape
         x = x.transpose(1, 2).view(B, self.embed_dim, x_size[0], x_size[1])
         return x
@@ -111,11 +194,27 @@ class PatchUnEmbed(nn.Module):
 
 class ESSAttn(nn.Module):
     def __init__(self, dim):
+        """Initialize the `ESSAttn` instance.
+
+        Args:
+            dim: Input parameter `dim`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         super().__init__()
         self.lnqkv = nn.Linear(dim, dim * 3)
         self.ln = nn.Linear(dim, dim)
 
     def forward(self, x):
+        """Run the forward computation for this module.
+
+        Args:
+            x: Input parameter `x`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         b, N, C = x.shape
         qkv = self.lnqkv(x)
         qkv = torch.split(qkv, C, 2)
@@ -139,6 +238,15 @@ class ESSAttn(nn.Module):
 
 class Downsample(nn.Sequential):
     def __init__(self, scale, num_feat):
+        """Initialize the `Downsample` instance.
+
+        Args:
+            scale: Input parameter `scale`.
+            num_feat: Input parameter `num_feat`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         m = []
         if (scale & (scale - 1)) == 0:  # scale = 2^n
             for _ in range(int(math.log(scale, 2))):
@@ -154,6 +262,15 @@ class Downsample(nn.Sequential):
 
 class Upsample(nn.Sequential):
     def __init__(self, scale, num_feat):
+        """Initialize the `Upsample` instance.
+
+        Args:
+            scale: Input parameter `scale`.
+            num_feat: Input parameter `num_feat`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         m = []
         if (scale & (scale - 1)) == 0:  # scale = 2^n
             for _ in range(int(math.log(scale, 2))):
@@ -174,6 +291,17 @@ class ESSA(nn.Module):
     """
 
     def __init__(self, dataset=None, inch=None, dim=128, upscale=4):
+        """Initialize the `ESSA` instance.
+
+        Args:
+            dataset: Input parameter `dataset`.
+            inch: Input parameter `inch`.
+            dim: Input parameter `dim`.
+            upscale: Input parameter `upscale`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         super(ESSA, self).__init__()
 
         # -------- AUTO DETECT --------
@@ -192,6 +320,14 @@ class ESSA(nn.Module):
         self.conv_last = nn.Conv2d(dim, inch, 3, 1, 1)
 
     def forward(self, x):
+        """Run the forward computation for this module.
+
+        Args:
+            x: Input parameter `x`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         x = self.conv_first(x)
         x = self.blockup(x)
         x = self.conv_last(x)
@@ -199,9 +335,26 @@ class ESSA(nn.Module):
 
     @classmethod
     def from_dataset(cls, dataset, **kwargs):
+        """Execute `from_dataset`.
+
+        Args:
+            dataset: Input parameter `dataset`.
+            **kwargs: Input parameter `**kwargs`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         return cls(dataset=dataset, **kwargs)
 
     def get_model_info(self):
+        """Execute `get_model_info`.
+
+        Args:
+            None.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         num_params = sum(p.numel() for p in self.parameters())
         return {
             "model_name": "ESSA (Baseline)",

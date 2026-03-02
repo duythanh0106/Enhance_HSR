@@ -17,11 +17,15 @@ class SpectralMultiHeadAttention(nn.Module):
     """
     
     def __init__(self, num_bands=31, num_heads=4, dropout=0.1):
-        """
+        """Initialize the `SpectralMultiHeadAttention` instance.
+
         Args:
-            num_bands: Số spectral bands (31 cho CAVE/Harvard)
-            num_heads: Số attention heads (phải chia hết cho num_bands)
-            dropout: Dropout rate
+            num_bands: Input parameter `num_bands`.
+            num_heads: Input parameter `num_heads`.
+            dropout: Input parameter `dropout`.
+
+        Returns:
+            None: This method initializes state and returns no value.
         """
         super().__init__()
         
@@ -41,11 +45,13 @@ class SpectralMultiHeadAttention(nn.Module):
         self.dropout = nn.Dropout(dropout)
         
     def forward(self, x):
-        """
+        """Run the forward computation for this module.
+
         Args:
-            x: [B, N, C] với N = H*W (số pixels), C = num_bands
+            x: Input parameter `x`.
+
         Returns:
-            out: [B, N, C] với spectral attention applied
+            Any: Output produced by this function.
         """
         B, N, C = x.shape
 
@@ -82,11 +88,15 @@ class SpectralFeedForward(nn.Module):
     """
     
     def __init__(self, num_bands=31, mlp_ratio=4.0, dropout=0.1):
-        """
+        """Initialize the `SpectralFeedForward` instance.
+
         Args:
-            num_bands: Số spectral bands
-            mlp_ratio: Expansion ratio cho hidden layer
-            dropout: Dropout rate
+            num_bands: Input parameter `num_bands`.
+            mlp_ratio: Input parameter `mlp_ratio`.
+            dropout: Input parameter `dropout`.
+
+        Returns:
+            None: This method initializes state and returns no value.
         """
         super().__init__()
         
@@ -98,11 +108,13 @@ class SpectralFeedForward(nn.Module):
         self.dropout = nn.Dropout(dropout)
         
     def forward(self, x):
-        """
+        """Run the forward computation for this module.
+
         Args:
-            x: [B, N, C]
+            x: Input parameter `x`.
+
         Returns:
-            out: [B, N, C]
+            Any: Output produced by this function.
         """
         x = self.fc1(x)
         x = self.act(x)
@@ -122,12 +134,16 @@ class SpectralTransformerBlock(nn.Module):
     """
     
     def __init__(self, num_bands=31, num_heads=4, mlp_ratio=4.0, dropout=0.1):
-        """
+        """Initialize the `SpectralTransformerBlock` instance.
+
         Args:
-            num_bands: Số spectral bands
-            num_heads: Số attention heads
-            mlp_ratio: FFN expansion ratio
-            dropout: Dropout rate
+            num_bands: Input parameter `num_bands`.
+            num_heads: Input parameter `num_heads`.
+            mlp_ratio: Input parameter `mlp_ratio`.
+            dropout: Input parameter `dropout`.
+
+        Returns:
+            None: This method initializes state and returns no value.
         """
         super().__init__()
         
@@ -138,11 +154,13 @@ class SpectralTransformerBlock(nn.Module):
         self.ffn = SpectralFeedForward(num_bands, mlp_ratio, dropout)
         
     def forward(self, x):
-        """
+        """Run the forward computation for this module.
+
         Args:
-            x: [B, N, C] với N = H*W, C = num_bands
+            x: Input parameter `x`.
+
         Returns:
-            out: [B, N, C]
+            Any: Output produced by this function.
         """
         # Multi-head attention with residual
         x = x + self.attn(self.norm1(x))
@@ -162,13 +180,17 @@ class SpectralTransformer(nn.Module):
     """
     
     def __init__(self, num_bands=31, depth=2, num_heads=4, mlp_ratio=4.0, dropout=0.1):
-        """
+        """Initialize the `SpectralTransformer` instance.
+
         Args:
-            num_bands: Số spectral bands (31 cho CAVE/Harvard)
-            depth: Số Transformer blocks
-            num_heads: Số attention heads
-            mlp_ratio: FFN expansion ratio
-            dropout: Dropout rate
+            num_bands: Input parameter `num_bands`.
+            depth: Input parameter `depth`.
+            num_heads: Input parameter `num_heads`.
+            mlp_ratio: Input parameter `mlp_ratio`.
+            dropout: Input parameter `dropout`.
+
+        Returns:
+            None: This method initializes state and returns no value.
         """
         super().__init__()
         
@@ -190,11 +212,13 @@ class SpectralTransformer(nn.Module):
         self.norm = nn.LayerNorm(num_bands)
         
     def forward(self, x):
-        """
+        """Run the forward computation for this module.
+
         Args:
-            x: [B, C, H, W] với C = num_bands
+            x: Input parameter `x`.
+
         Returns:
-            out: [B, C, H, W] với spectral dependencies learned
+            Any: Output produced by this function.
         """
         B, C, H, W = x.shape
         
@@ -224,6 +248,16 @@ class SpectralTransformerWithConv(nn.Module):
     """
     
     def __init__(self, num_bands=31, depth=2, num_heads=4):
+        """Initialize the `SpectralTransformerWithConv` instance.
+
+        Args:
+            num_bands: Input parameter `num_bands`.
+            depth: Input parameter `depth`.
+            num_heads: Input parameter `num_heads`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         super().__init__()
         
         # Conv cho spatial features
@@ -241,11 +275,13 @@ class SpectralTransformerWithConv(nn.Module):
         self.conv_after = nn.Conv2d(num_bands, num_bands, 3, 1, 1)
         
     def forward(self, x):
-        """
+        """Run the forward computation for this module.
+
         Args:
-            x: [B, C, H, W]
+            x: Input parameter `x`.
+
         Returns:
-            out: [B, C, H, W]
+            Any: Output produced by this function.
         """
         identity = x
         

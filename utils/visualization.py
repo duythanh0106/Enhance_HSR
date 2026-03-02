@@ -9,16 +9,17 @@ import torch
 
 
 def plot_spectral_curves(lr, sr, hr, pixel_coords, save_path=None):
-    """
-    Plot spectral signatures của một pixel
-    So sánh LR, SR (predicted), và HR (ground truth)
-    
+    """Execute `plot_spectral_curves`.
+
     Args:
-        lr: [C, H, W] - Low resolution
-        sr: [C, H, W] - Super-resolved
-        hr: [C, H, W] - High resolution ground truth
-        pixel_coords: (y, x) - Pixel location to plot
-        save_path: Path to save figure
+        lr: Input parameter `lr`.
+        sr: Input parameter `sr`.
+        hr: Input parameter `hr`.
+        pixel_coords: Input parameter `pixel_coords`.
+        save_path: Input parameter `save_path`.
+
+    Returns:
+        None: This function returns no value.
     """
     # Convert to numpy if torch tensor
     if torch.is_tensor(lr):
@@ -63,15 +64,16 @@ def plot_spectral_curves(lr, sr, hr, pixel_coords, save_path=None):
 
 
 def plot_rgb_comparison(lr, sr, hr, save_path=None):
-    """
-    Plot RGB comparison của LR, SR, HR
-    Dùng bands 25 (R), 15 (G), 5 (B) cho CAVE
-    
+    """Execute `plot_rgb_comparison`.
+
     Args:
-        lr: [C, H, W]
-        sr: [C, H, W]
-        hr: [C, H, W]
-        save_path: Path to save figure
+        lr: Input parameter `lr`.
+        sr: Input parameter `sr`.
+        hr: Input parameter `hr`.
+        save_path: Input parameter `save_path`.
+
+    Returns:
+        Any: Output produced by this function.
     """
     # Convert to numpy
     if torch.is_tensor(lr):
@@ -83,6 +85,14 @@ def plot_rgb_comparison(lr, sr, hr, save_path=None):
     
     # Extract RGB bands
     def to_rgb(img):
+        """Execute `to_rgb`.
+
+        Args:
+            img: Input parameter `img`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         r = img[25, :, :]
         g = img[15, :, :]
         b = img[5, :, :]
@@ -125,12 +135,14 @@ def plot_rgb_comparison(lr, sr, hr, save_path=None):
 
 
 def plot_attention_maps(attention_maps, save_path=None):
-    """
-    Visualize attention maps từ SSAM module
-    
+    """Execute `plot_attention_maps`.
+
     Args:
-        attention_maps: Dictionary chứa spatial và spectral attention
-        save_path: Path to save figure
+        attention_maps: Input parameter `attention_maps`.
+        save_path: Input parameter `save_path`.
+
+    Returns:
+        None: This function returns no value.
     """
     spatial_att = attention_maps.get('spatial', None)
     spectral_att = attention_maps.get('spectral', None)
@@ -193,13 +205,15 @@ def plot_attention_maps(attention_maps, save_path=None):
 
 
 def plot_training_curves(train_losses, val_metrics, save_path=None):
-    """
-    Plot training curves: loss và metrics over epochs
-    
+    """Execute `plot_training_curves`.
+
     Args:
-        train_losses: List of training losses
-        val_metrics: List of dicts containing validation metrics
-        save_path: Path to save figure
+        train_losses: Input parameter `train_losses`.
+        val_metrics: Input parameter `val_metrics`.
+        save_path: Input parameter `save_path`.
+
+    Returns:
+        None: This function returns no value.
     """
     epochs = range(1, len(train_losses) + 1)
     val_epochs = range(1, len(val_metrics) + 1)
@@ -252,13 +266,14 @@ def plot_training_curves(train_losses, val_metrics, save_path=None):
 
 
 def plot_metrics_comparison(models_metrics, save_path=None):
-    """
-    Plot bar chart so sánh metrics của nhiều models
-    Dùng cho ablation study và comparison với baselines
-    
+    """Execute `plot_metrics_comparison`.
+
     Args:
-        models_metrics: Dict {model_name: {metric: value}}
-        save_path: Path to save figure
+        models_metrics: Input parameter `models_metrics`.
+        save_path: Input parameter `save_path`.
+
+    Returns:
+        None: This function returns no value.
     """
     model_names = list(models_metrics.keys())
     metrics_names = ['PSNR', 'SSIM', 'SAM', 'ERGAS']

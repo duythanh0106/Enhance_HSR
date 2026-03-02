@@ -17,23 +17,24 @@ import json
 from datetime import datetime
 import time
 
-from config import ConfigBaseline, ConfigProposed, ConfigSpecTrans, infer_dataset_name
-from data.dataset import HyperspectralTestDataset
+from config import CONFIG_PRESET_CHOICES, build_config, infer_dataset_name
+from data.dataset import HyperspectralTestDataset, build_split_kwargs, load_dataset_with_fallback
 from models.factory import build_model_from_config, load_state_dict_compat
+from utils.inference import forward_chop
 from utils.metrics import calculate_psnr, calculate_ssim, calculate_sam, calculate_ergas
 from utils.device import resolve_device
-
-
-def format_duration(seconds):
-    total = int(seconds)
-    h, rem = divmod(total, 3600)
-    m, s = divmod(rem, 60)
-    if h > 0:
-        return f"{h:02d}:{m:02d}:{s:02d}"
-    return f"{m:02d}:{s:02d}"
+from utils.time_utils import format_duration
 
 
 def remove_dir_if_effectively_empty(path):
+    """Execute `remove_dir_if_effectively_empty`.
+
+    Args:
+        path: Input parameter `path`.
+
+    Returns:
+        None: This function returns no value.
+    """
     if not path:
         return
     if not os.path.isdir(path):
@@ -46,53 +47,6 @@ def remove_dir_if_effectively_empty(path):
         os.rmdir(path)
 
 
-@torch.no_grad()
-def forward_chop(model, x, scale, patch_size=64, overlap=16):
-    """
-    Sliding window inference để tránh OOM do Spectral Transformer
-    Attention có độ phức tạp O((H×W)^2) nên không thể chạy full ảnh lớn.
-
-    Args:
-        model: SR model
-        x: LR image tensor (1, C, H, W)
-        scale: Upscale factor
-        patch_size: kích thước patch LR
-        overlap: vùng overlap giữa patch để tránh seam
-
-    Returns:
-        sr: SR full image (1, C, H*scale, W*scale)
-    """
-
-    b, c, h, w = x.size()
-    patch_size = max(1, int(patch_size))
-    patch_size = min(patch_size, h, w)
-    overlap = max(0, int(overlap))
-    overlap = min(overlap, patch_size - 1)
-    stride = patch_size - overlap
-
-    h_idx = list(range(0, h - patch_size, stride)) + [h - patch_size]
-    w_idx = list(range(0, w - patch_size, stride)) + [w - patch_size]
-
-    sr = torch.zeros(b, c, h * scale, w * scale, device=x.device)
-    weight = torch.zeros_like(sr)
-
-    for i in h_idx:
-        for j in w_idx:
-            patch = x[:, :, i:i+patch_size, j:j+patch_size]
-            sr_patch = model(patch)
-
-            h_start = i * scale
-            w_start = j * scale
-            h_end = h_start + patch_size * scale
-            w_end = w_start + patch_size * scale
-
-            sr[:, :, h_start:h_end, w_start:w_end] += sr_patch
-            weight[:, :, h_start:h_end, w_start:w_end] += 1
-
-    sr /= weight
-    return sr
-
-
 def test_full_image(
     model,
     dataloader,
@@ -103,19 +57,20 @@ def test_full_image(
     chop_patch_size=32,
     chop_overlap=8
 ):
-    """
-    Test model trên full images (không crop patches)
-    
+    """Execute `test_full_image`.
+
     Args:
-        model: Model đã load weights
-        dataloader: DataLoader cho test set
-        scale: Upscale factor
-        device: cuda hoặc cpu
-        crop_border: Có crop border hay không (theo paper style)
-        save_dir: Nếu không None, save reconstructed images
-    
+        model: Input parameter `model`.
+        dataloader: Input parameter `dataloader`.
+        scale: Input parameter `scale`.
+        device: Input parameter `device`.
+        crop_border: Input parameter `crop_border`.
+        save_dir: Input parameter `save_dir`.
+        chop_patch_size: Input parameter `chop_patch_size`.
+        chop_overlap: Input parameter `chop_overlap`.
+
     Returns:
-        dict: Metrics averaged over test set
+        Any: Output produced by this function.
     """
     model.eval()
 
@@ -241,6 +196,14 @@ def test_full_image(
 
 
 def main():
+    """Execute the main entry-point workflow.
+
+    Args:
+        None.
+
+    Returns:
+        None: This function returns no value.
+    """
     script_start = time.time()
 
     parser = argparse.ArgumentParser(description='Test Hyperspectral SR Model (Full Image)')
@@ -249,7 +212,7 @@ def main():
     parser.add_argument('--data_root', type=str, required=True,
                        help='Path to test data')
     parser.add_argument('--config', type=str, default=None,
-                       choices=['baseline', 'proposed', 'spectrans'],
+                       choices=CONFIG_PRESET_CHOICES,
                        help='Config preset (optional, will use checkpoint config if not provided)')
     parser.add_argument(
         '--device',
@@ -310,48 +273,40 @@ def main():
     checkpoint_data_root = None
     if 'config' in checkpoint:
         config = checkpoint['config']
-        if isinstance(config, dict):
-            checkpoint_num_bands = config.get('num_spectral_bands')
-            checkpoint_data_root = config.get('data_root')
+        if not isinstance(config, dict):
+            config = {
+                k: v for k, v in vars(config).items()
+                if not k.startswith('_') and not callable(v)
+            }
+        checkpoint_num_bands = config.get('num_spectral_bands')
+        checkpoint_data_root = config.get('data_root')
         print("Using config from checkpoint")
     elif args.config:
-        if args.config == 'baseline':
-            config_obj = ConfigBaseline()
-        elif args.config == 'proposed':
-            config_obj = ConfigProposed()
-        elif args.config == 'spectrans':
-            config_obj = ConfigSpecTrans()
+        config_obj = build_config(args.config)
         config = config_obj.__dict__
         print(f"Using config preset: {args.config}")
     else:
         raise ValueError("No config found in checkpoint and no --config provided")
 
-    device_pref = args.device if args.device is not None else (
-        config.get('device', 'auto') if isinstance(config, dict) else 'auto'
-    )
+    device_pref = args.device if args.device is not None else config.get('device', 'auto')
     device = resolve_device(device_pref)
     print(f"Using device: {device}")
     
-    if isinstance(config, dict):
-        upscale = config.get('upscale_factor', 4)
-        split_seed = config.get('split_seed', 42)
-        train_ratio = config.get('train_ratio', 0.8)
-        val_ratio = config.get('val_ratio', 0.1)
-        test_ratio = config.get('test_ratio', 0.1)
-        regenerate_split = config.get('regenerate_split', False)
-    else:
-        upscale = config['upscale_factor']
-        split_seed = 42
-        train_ratio = 0.8
-        val_ratio = 0.1
-        test_ratio = 0.1
-        regenerate_split = False
+    upscale = config.get('upscale_factor', 4)
+    split_kwargs = build_split_kwargs(
+        upscale=upscale,
+        split_seed=config.get('split_seed', 42),
+        train_ratio=config.get('train_ratio', 0.8),
+        val_ratio=config.get('val_ratio', 0.1),
+        test_ratio=config.get('test_ratio', 0.1),
+        force_regenerate_split=config.get('regenerate_split', False),
+    )
     
     # Print test info
     print("\n" + "="*70)
     print("TEST CONFIGURATION")
     print("="*70)
-    print(f"Model: {config.get('model_name') if isinstance(config, dict) else config['model_name']}")
+    print(f"Model: {config.get('model_name')}")
     print(f"Dataset: {dataset_name}")
     print(f"Data root: {args.data_root}")
     print(f"Upscale: x{upscale}")
@@ -361,33 +316,14 @@ def main():
     print(f"Save images: {args.save_images}")
     print("="*70)
     
-    # Build test dataset (FULL IMAGE, FIXED TEST SPLIT)
-    try:
-        test_dataset = HyperspectralTestDataset(
-            data_root=args.data_root,
-            split='test',  # ⭐ FIXED test split - NEVER seen during training
-            upscale=upscale,
-            split_seed=split_seed,
-            train_ratio=train_ratio,
-            val_ratio=val_ratio,
-            test_ratio=test_ratio,
-            force_regenerate_split=regenerate_split
-        )
-    except ValueError as exc:
-        message = str(exc)
-        if "No images found for split 'test'" not in message:
-            raise
-        print("⚠️ Test split is empty. Falling back to split='train' for testing.")
-        test_dataset = HyperspectralTestDataset(
-            data_root=args.data_root,
-            split='train',
-            upscale=upscale,
-            split_seed=split_seed,
-            train_ratio=train_ratio,
-            val_ratio=val_ratio,
-            test_ratio=test_ratio,
-            force_regenerate_split=regenerate_split
-        )
+    test_dataset, _ = load_dataset_with_fallback(
+        dataset_cls=HyperspectralTestDataset,
+        primary_split='test',
+        fallback_split='train',
+        data_root=args.data_root,
+        log_fn=print,
+        **split_kwargs,
+    )
 
     detected_num_bands = test_dataset.num_bands
     if checkpoint_num_bands is not None and int(checkpoint_num_bands) != int(detected_num_bands):
@@ -400,7 +336,7 @@ def main():
             "Use a checkpoint trained on the same spectral band count as the test dataset."
         )
 
-    config_num_bands = config.get('num_spectral_bands') if isinstance(config, dict) else None
+    config_num_bands = config.get('num_spectral_bands')
     if config_num_bands != detected_num_bands:
         print(
             f"Updating num_spectral_bands: "

@@ -382,12 +382,18 @@ loss_phase1_ratio = 0.4
 loss_phase1_sam_scale = 0.3
 loss_phase1_ssim_scale = 0.25
 best_selection_metric = 'composite'
-num_epochs = 400  # profile multi-scene (Harvard/CAVE)
+use_early_stopping = True
+early_stopping_patience = 40
+early_stopping_min_delta = 1e-4
+early_stopping_start_epoch = 20
+num_epochs = 1000  # profile multi-scene (Harvard/CAVE)
 
 # Tự chuyển profile khi dataset là single-scene (Chikusei/Pavia)
-train_virtual_samples_per_epoch = 4000
-val_virtual_samples_per_epoch = 512
-num_epochs = 600  # profile single-scene
+train_virtual_samples_per_epoch = 2000
+val_virtual_samples_per_epoch = 256
+num_epochs = 100
+early_stopping_patience = 12
+early_stopping_start_epoch = 25
 ```
 
 ### Hyperparameter Tuning (Optuna)

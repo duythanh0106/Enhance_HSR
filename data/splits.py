@@ -20,6 +20,16 @@ except ImportError:  # pragma: no cover - optional dependency at runtime
 
 
 def _validate_ratios(train_ratio, val_ratio, test_ratio):
+    """Internal helper for `validate_ratios` operations.
+
+    Args:
+        train_ratio: Input parameter `train_ratio`.
+        val_ratio: Input parameter `val_ratio`.
+        test_ratio: Input parameter `test_ratio`.
+
+    Returns:
+        Any: Output produced by this function.
+    """
     ratios = {
         "train_ratio": float(train_ratio),
         "val_ratio": float(val_ratio),
@@ -35,6 +45,17 @@ def _validate_ratios(train_ratio, val_ratio, test_ratio):
 
 
 def _compute_split_sizes(total, train_ratio, val_ratio, test_ratio):
+    """Internal helper for `compute_split_sizes` operations.
+
+    Args:
+        total: Input parameter `total`.
+        train_ratio: Input parameter `train_ratio`.
+        val_ratio: Input parameter `val_ratio`.
+        test_ratio: Input parameter `test_ratio`.
+
+    Returns:
+        Any: Output produced by this function.
+    """
     ratios, ratio_sum = _validate_ratios(train_ratio, val_ratio, test_ratio)
     keys = ["train", "val", "test"]
     normalized = [ratios["train_ratio"] / ratio_sum, ratios["val_ratio"] / ratio_sum, ratios["test_ratio"] / ratio_sum]
@@ -78,9 +99,13 @@ def _compute_split_sizes(total, train_ratio, val_ratio, test_ratio):
 
 
 def is_hyperspectral_mat(path):
-    """
-    Fast check whether a .mat file contains at least one 3D numeric array.
-    Uses scipy.io.whosmat metadata to avoid loading large arrays into memory.
+    """Execute `is_hyperspectral_mat`.
+
+    Args:
+        path: Input parameter `path`.
+
+    Returns:
+        Any: Output produced by this function.
     """
     preferred_keys = {"rad", "cube", "ref", "data", "img"}
 
@@ -109,6 +134,15 @@ def is_hyperspectral_mat(path):
                 found_3d = False
 
                 def visitor(_, obj):
+                    """Execute `visitor`.
+
+                    Args:
+                        _: Input parameter `_`.
+                        obj: Input parameter `obj`.
+
+                    Returns:
+                        None: This function returns no value.
+                    """
                     nonlocal found_3d
                     if found_3d:
                         return
@@ -132,19 +166,18 @@ def generate_split(
     seed=42,
     save=True,
 ):
-    """
-    Generate reproducible split for any dataset.
+    """Execute `generate_split`.
 
     Args:
-        data_root: folder containing .mat files
-        train_ratio: training portion
-        val_ratio: validation portion
-        test_ratio: testing portion
-        seed: random seed
-        save: whether to save split.json
+        data_root: Input parameter `data_root`.
+        train_ratio: Input parameter `train_ratio`.
+        val_ratio: Input parameter `val_ratio`.
+        test_ratio: Input parameter `test_ratio`.
+        seed: Input parameter `seed`.
+        save: Input parameter `save`.
 
     Returns:
-        dict with train/val/test file paths
+        Any: Output produced by this function.
     """
 
     # 1️⃣ Scan files
@@ -208,8 +241,13 @@ def generate_split(
 
 
 def load_split(data_root):
-    """
-    Load existing split.json
+    """Execute `load_split`.
+
+    Args:
+        data_root: Input parameter `data_root`.
+
+    Returns:
+        Any: Output produced by this function.
     """
 
     split_path = os.path.join(data_root, "split.json")
@@ -224,8 +262,14 @@ def load_split(data_root):
 
 
 def get_split(data_root, split="train"):
-    """
-    Get file list for train/val/test
+    """Execute `get_split`.
+
+    Args:
+        data_root: Input parameter `data_root`.
+        split: Input parameter `split`.
+
+    Returns:
+        Any: Output produced by this function.
     """
 
     split_data = load_split(data_root)

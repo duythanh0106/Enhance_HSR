@@ -16,15 +16,40 @@ from .spatial_spectral_attention import SpatialSpectralAttention
 
 class PatchEmbed(nn.Module):
     def forward(self, x):
+        """Run the forward computation for this module.
+
+        Args:
+            x: Input parameter `x`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         return x.flatten(2).transpose(1, 2)
 
 
 class PatchUnEmbed(nn.Module):
     def __init__(self, embed_dim):
+        """Initialize the `PatchUnEmbed` instance.
+
+        Args:
+            embed_dim: Input parameter `embed_dim`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         super().__init__()
         self.embed_dim = embed_dim
 
     def forward(self, x, x_size):
+        """Run the forward computation for this module.
+
+        Args:
+            x: Input parameter `x`.
+            x_size: Input parameter `x_size`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         B, HW, C = x.shape
         return x.transpose(1, 2).view(B, self.embed_dim, x_size[0], x_size[1])
 
@@ -35,6 +60,15 @@ class PatchUnEmbed(nn.Module):
 
 class ConvdownSSAM(nn.Module):
     def __init__(self, dim, fusion_mode='sequential'):
+        """Initialize the `ConvdownSSAM` instance.
+
+        Args:
+            dim: Input parameter `dim`.
+            fusion_mode: Input parameter `fusion_mode`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         super().__init__()
 
         self.patch_embed = PatchEmbed()
@@ -61,6 +95,14 @@ class ConvdownSSAM(nn.Module):
         )
 
     def forward(self, x):
+        """Run the forward computation for this module.
+
+        Args:
+            x: Input parameter `x`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         shortcut = x
         x_size = (x.shape[2], x.shape[3])
 
@@ -80,6 +122,15 @@ class ConvdownSSAM(nn.Module):
 
 class ConvupSSAM(nn.Module):
     def __init__(self, dim, fusion_mode='sequential'):
+        """Initialize the `ConvupSSAM` instance.
+
+        Args:
+            dim: Input parameter `dim`.
+            fusion_mode: Input parameter `fusion_mode`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         super().__init__()
 
         self.patch_embed = PatchEmbed()
@@ -106,6 +157,14 @@ class ConvupSSAM(nn.Module):
         )
 
     def forward(self, x):
+        """Run the forward computation for this module.
+
+        Args:
+            x: Input parameter `x`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         shortcut = x
         x_size = (x.shape[2], x.shape[3])
 
@@ -129,6 +188,15 @@ class ConvupSSAM(nn.Module):
 
 class Downsample(nn.Sequential):
     def __init__(self, scale, num_feat):
+        """Initialize the `Downsample` instance.
+
+        Args:
+            scale: Input parameter `scale`.
+            num_feat: Input parameter `num_feat`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         m = []
         if (scale & (scale - 1)) == 0:
             for _ in range(int(math.log(scale, 2))):
@@ -144,6 +212,15 @@ class Downsample(nn.Sequential):
 
 class Upsample(nn.Sequential):
     def __init__(self, scale, num_feat):
+        """Initialize the `Upsample` instance.
+
+        Args:
+            scale: Input parameter `scale`.
+            num_feat: Input parameter `num_feat`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         m = []
         if (scale & (scale - 1)) == 0:
             for _ in range(int(math.log(scale, 2))):
@@ -169,6 +246,18 @@ class ESSA_SSAM(nn.Module):
     def __init__(self, dataset=None, inch=None,
                  dim=128, upscale=4,
                  fusion_mode='sequential'):
+        """Initialize the `ESSA_SSAM` instance.
+
+        Args:
+            dataset: Input parameter `dataset`.
+            inch: Input parameter `inch`.
+            dim: Input parameter `dim`.
+            upscale: Input parameter `upscale`.
+            fusion_mode: Input parameter `fusion_mode`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         super().__init__()
 
         # -------- AUTO DETECT --------
@@ -188,6 +277,14 @@ class ESSA_SSAM(nn.Module):
         self.conv_last = nn.Conv2d(dim, inch, 3, 1, 1)
 
     def forward(self, x):
+        """Run the forward computation for this module.
+
+        Args:
+            x: Input parameter `x`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         x = self.conv_first(x)
         x = self.blockup(x)
         x = self.conv_last(x)
@@ -195,9 +292,26 @@ class ESSA_SSAM(nn.Module):
 
     @classmethod
     def from_dataset(cls, dataset, **kwargs):
+        """Execute `from_dataset`.
+
+        Args:
+            dataset: Input parameter `dataset`.
+            **kwargs: Input parameter `**kwargs`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         return cls(dataset=dataset, **kwargs)
 
     def get_model_info(self):
+        """Execute `get_model_info`.
+
+        Args:
+            None.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         num_params = sum(p.numel() for p in self.parameters())
         return {
             "model_name": "ESSA-SSAM",
@@ -215,6 +329,16 @@ class ESSA_SSAM(nn.Module):
 
 class BlockupSSAM(nn.Module):
     def __init__(self, dim, upscale, fusion_mode='sequential'):
+        """Initialize the `BlockupSSAM` instance.
+
+        Args:
+            dim: Input parameter `dim`.
+            upscale: Input parameter `upscale`.
+            fusion_mode: Input parameter `fusion_mode`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         super().__init__()
         self.convup = ConvupSSAM(dim, fusion_mode)
         self.convdown = ConvdownSSAM(dim, fusion_mode)
@@ -222,6 +346,14 @@ class BlockupSSAM(nn.Module):
         self.convdownsample = Downsample(upscale, dim)
 
     def forward(self, x):
+        """Run the forward computation for this module.
+
+        Args:
+            x: Input parameter `x`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         xup = self.convupsample(x)
         x1 = self.convup(xup)
 

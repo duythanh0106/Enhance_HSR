@@ -12,20 +12,54 @@ import math
 class L1Loss(nn.Module):
     """Standard L1 Loss"""
     def __init__(self):
+        """Initialize the `L1Loss` instance.
+
+        Args:
+            None.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         super(L1Loss, self).__init__()
         self.loss = nn.L1Loss()
     
     def forward(self, pred, target):
+        """Run the forward computation for this module.
+
+        Args:
+            pred: Input parameter `pred`.
+            target: Input parameter `target`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         return self.loss(pred, target)
 
 
 class L2Loss(nn.Module):
     """Standard L2 (MSE) Loss"""
     def __init__(self):
+        """Initialize the `L2Loss` instance.
+
+        Args:
+            None.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         super(L2Loss, self).__init__()
         self.loss = nn.MSELoss()
     
     def forward(self, pred, target):
+        """Run the forward computation for this module.
+
+        Args:
+            pred: Input parameter `pred`.
+            target: Input parameter `target`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         return self.loss(pred, target)
 
 
@@ -37,16 +71,26 @@ class SAMLoss(nn.Module):
     SAM đo góc giữa spectral signatures - giữ nguyên hình dạng phổ
     """
     def __init__(self, eps=1e-8):
+        """Initialize the `SAMLoss` instance.
+
+        Args:
+            eps: Input parameter `eps`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         super(SAMLoss, self).__init__()
         self.eps = eps
     
     def forward(self, pred, target):
-        """
+        """Run the forward computation for this module.
+
         Args:
-            pred: [B, C, H, W] - Predicted image
-            target: [B, C, H, W] - Ground truth
+            pred: Input parameter `pred`.
+            target: Input parameter `target`.
+
         Returns:
-            loss: SAM loss in radians (averaged)
+            Any: Output produced by this function.
         """
         # Reshape to [B, C, H*W]
         B, C, H, W = pred.shape
@@ -76,6 +120,15 @@ class SSIMLoss(nn.Module):
     SSIM Loss for better perceptual quality
     """
     def __init__(self, window_size=11, data_range=1.0):
+        """Initialize the `SSIMLoss` instance.
+
+        Args:
+            window_size: Input parameter `window_size`.
+            data_range: Input parameter `data_range`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         super(SSIMLoss, self).__init__()
         self.window_size = window_size
         self.data_range = data_range
@@ -94,12 +147,14 @@ class SSIMLoss(nn.Module):
         self.C2 = (0.03 * data_range) ** 2
     
     def forward(self, pred, target):
-        """
+        """Run the forward computation for this module.
+
         Args:
-            pred: [B, C, H, W]
-            target: [B, C, H, W]
+            pred: Input parameter `pred`.
+            target: Input parameter `target`.
+
         Returns:
-            loss: 1 - SSIM (so lower is better)
+            Any: Output produced by this function.
         """
         C = pred.size(1)
         window = self.window.expand(C, 1, self.window_size, self.window_size).contiguous()
@@ -137,11 +192,15 @@ class CombinedLoss(nn.Module):
     - SSIM: Structural similarity
     """
     def __init__(self, lambda_l1=1.0, lambda_sam=0.1, lambda_ssim=0.5):
-        """
+        """Initialize the `CombinedLoss` instance.
+
         Args:
-            lambda_l1: Weight for L1 loss
-            lambda_sam: Weight for SAM loss
-            lambda_ssim: Weight for SSIM loss
+            lambda_l1: Input parameter `lambda_l1`.
+            lambda_sam: Input parameter `lambda_sam`.
+            lambda_ssim: Input parameter `lambda_ssim`.
+
+        Returns:
+            None: This method initializes state and returns no value.
         """
         super(CombinedLoss, self).__init__()
         
@@ -154,7 +213,16 @@ class CombinedLoss(nn.Module):
         self.ssim_loss = SSIMLoss()
 
     def set_weights(self, lambda_l1=None, lambda_sam=None, lambda_ssim=None):
-        """Update loss weights during training (for staged scheduling)."""
+        """Execute `set_weights`.
+
+        Args:
+            lambda_l1: Input parameter `lambda_l1`.
+            lambda_sam: Input parameter `lambda_sam`.
+            lambda_ssim: Input parameter `lambda_ssim`.
+
+        Returns:
+            None: This function returns no value.
+        """
         if lambda_l1 is not None:
             self.lambda_l1 = float(lambda_l1)
         if lambda_sam is not None:
@@ -163,6 +231,14 @@ class CombinedLoss(nn.Module):
             self.lambda_ssim = float(lambda_ssim)
 
     def get_weights(self):
+        """Execute `get_weights`.
+
+        Args:
+            None.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         return {
             'lambda_l1': float(self.lambda_l1),
             'lambda_sam': float(self.lambda_sam),
@@ -170,13 +246,14 @@ class CombinedLoss(nn.Module):
         }
     
     def forward(self, pred, target):
-        """
+        """Run the forward computation for this module.
+
         Args:
-            pred: [B, C, H, W]
-            target: [B, C, H, W]
+            pred: Input parameter `pred`.
+            target: Input parameter `target`.
+
         Returns:
-            total_loss: Combined loss
-            loss_dict: Dictionary chứa các loss components (để logging)
+            Any: Output produced by this function.
         """
         # Calculate individual losses
         l1 = self.l1_loss(pred, target)
@@ -207,6 +284,14 @@ class AdaptiveCombinedLoss(nn.Module):
     Đây là một cải tiến nâng cao có thể đề cập trong khóa luận!
     """
     def __init__(self):
+        """Initialize the `AdaptiveCombinedLoss` instance.
+
+        Args:
+            None.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         super(AdaptiveCombinedLoss, self).__init__()
         
         # Learnable log variance parameters
@@ -219,9 +304,14 @@ class AdaptiveCombinedLoss(nn.Module):
         self.ssim_loss = SSIMLoss()
     
     def forward(self, pred, target):
-        """
-        Multi-task learning with uncertainty weighting
-        Based on "Multi-Task Learning Using Uncertainty to Weigh Losses"
+        """Run the forward computation for this module.
+
+        Args:
+            pred: Input parameter `pred`.
+            target: Input parameter `target`.
+
+        Returns:
+            Any: Output produced by this function.
         """
         # Calculate individual losses
         l1 = self.l1_loss(pred, target)

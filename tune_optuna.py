@@ -9,14 +9,7 @@ import argparse
 import math
 from datetime import datetime
 
-from config import (
-    Config,
-    ConfigBaseline,
-    ConfigProposed,
-    ConfigLightweight,
-    ConfigSpecTrans,
-    ConfigUniversalBest,
-)
+from config import CONFIG_PRESET_CHOICES, build_config
 from train import Trainer
 
 try:
@@ -24,23 +17,17 @@ try:
 except ImportError:  # pragma: no cover
     optuna = None
 
-
-def build_config(name: str):
-    key = (name or "default").lower()
-    if key == "baseline":
-        return ConfigBaseline()
-    if key == "proposed":
-        return ConfigProposed()
-    if key == "spectrans":
-        return ConfigSpecTrans()
-    if key == "lightweight":
-        return ConfigLightweight()
-    if key == "universal_best":
-        return ConfigUniversalBest()
-    return Config()
-
-
 def configure_for_tuning(cfg, args, trial):
+    """Execute `configure_for_tuning`.
+
+    Args:
+        cfg: Input parameter `cfg`.
+        args: Input parameter `args`.
+        trial: Input parameter `trial`.
+
+    Returns:
+        Any: Output produced by this function.
+    """
     if args.data_root:
         cfg.data_root = args.data_root
         if hasattr(cfg, "apply_dataset_profile"):
@@ -96,12 +83,20 @@ def configure_for_tuning(cfg, args, trial):
 
 
 def main():
+    """Execute the main entry-point workflow.
+
+    Args:
+        None.
+
+    Returns:
+        Any: Output produced by this function.
+    """
     parser = argparse.ArgumentParser(description="Optuna tuning for HSI-SR training")
     parser.add_argument(
         "--config",
         type=str,
         default="universal_best",
-        choices=["default", "baseline", "proposed", "spectrans", "lightweight", "universal_best"],
+        choices=CONFIG_PRESET_CHOICES,
         help="Base config preset",
     )
     parser.add_argument("--data_root", type=str, default=None, help="Dataset root override")
@@ -130,6 +125,14 @@ def main():
     )
 
     def objective(trial):
+        """Execute `objective`.
+
+        Args:
+            trial: Input parameter `trial`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         cfg = build_config(args.config)
         cfg = configure_for_tuning(cfg, args, trial)
         trainer = Trainer(cfg)

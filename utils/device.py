@@ -4,13 +4,13 @@ import torch
 
 
 def resolve_device(preferred='auto'):
-    """
-    Resolve torch device from preference.
+    """Execute `resolve_device`.
 
-    Preference order:
-    - 'auto': cuda -> mps -> cpu
-    - 'cuda'/'mps': use if available, otherwise fallback to auto order
-    - 'cpu': always cpu
+    Args:
+        preferred: Input parameter `preferred`.
+
+    Returns:
+        Any: Output produced by this function.
     """
     preferred = (preferred or 'auto').lower()
 

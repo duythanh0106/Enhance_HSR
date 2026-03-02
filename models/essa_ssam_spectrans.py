@@ -23,9 +23,25 @@ except ImportError:
 class PatchEmbed(nn.Module):
     """Chuyển từ image space sang patch embedding"""
     def __init__(self):
+        """Initialize the `PatchEmbed` instance.
+
+        Args:
+            None.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         super().__init__()
 
     def forward(self, x):
+        """Run the forward computation for this module.
+
+        Args:
+            x: Input parameter `x`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         x = x.flatten(2).transpose(1, 2)  # [B, C, H, W] -> [B, HW, C]
         return x
 
@@ -33,10 +49,27 @@ class PatchEmbed(nn.Module):
 class PatchUnEmbed(nn.Module):
     """Chuyển từ patch embedding về image space"""
     def __init__(self, embed_dim=96):
+        """Initialize the `PatchUnEmbed` instance.
+
+        Args:
+            embed_dim: Input parameter `embed_dim`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         super().__init__()
         self.embed_dim = embed_dim
 
     def forward(self, x, x_size):
+        """Run the forward computation for this module.
+
+        Args:
+            x: Input parameter `x`.
+            x_size: Input parameter `x_size`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         B, HW, C = x.shape
         x = x.transpose(1, 2).view(B, self.embed_dim, x_size[0], x_size[1])
         return x
@@ -49,6 +82,17 @@ class ConvdownSpecTrans(nn.Module):
     Flow: Input → SSAM → Spectral Transformer → Conv → Output
     """
     def __init__(self, dim, fusion_mode='sequential', use_spectrans=True, spectrans_depth=2):
+        """Initialize the `ConvdownSpecTrans` instance.
+
+        Args:
+            dim: Input parameter `dim`.
+            fusion_mode: Input parameter `fusion_mode`.
+            use_spectrans: Input parameter `use_spectrans`.
+            spectrans_depth: Input parameter `spectrans_depth`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         super().__init__()
         
         self.use_spectrans = use_spectrans
@@ -86,6 +130,14 @@ class ConvdownSpecTrans(nn.Module):
         self.drop = nn.Dropout2d(0.2)
 
     def forward(self, x):
+        """Run the forward computation for this module.
+
+        Args:
+            x: Input parameter `x`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         shortcut = x
         x_size = (x.shape[2], x.shape[3])
         
@@ -118,6 +170,17 @@ class ConvupSpecTrans(nn.Module):
     Convup block với SSAM + Spectral Transformer
     """
     def __init__(self, dim, fusion_mode='sequential', use_spectrans=True, spectrans_depth=2):
+        """Initialize the `ConvupSpecTrans` instance.
+
+        Args:
+            dim: Input parameter `dim`.
+            fusion_mode: Input parameter `fusion_mode`.
+            use_spectrans: Input parameter `use_spectrans`.
+            spectrans_depth: Input parameter `spectrans_depth`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         super().__init__()
         
         self.use_spectrans = use_spectrans
@@ -155,6 +218,14 @@ class ConvupSpecTrans(nn.Module):
         self.norm = nn.LayerNorm(dim)
 
     def forward(self, x):
+        """Run the forward computation for this module.
+
+        Args:
+            x: Input parameter `x`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         shortcut = x
         x_size = (x.shape[2], x.shape[3])
         
@@ -185,6 +256,15 @@ class ConvupSpecTrans(nn.Module):
 class Downsample(nn.Sequential):
     """Downsample layer using PixelUnshuffle"""
     def __init__(self, scale, num_feat):
+        """Initialize the `Downsample` instance.
+
+        Args:
+            scale: Input parameter `scale`.
+            num_feat: Input parameter `num_feat`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         m = []
         if (scale & (scale - 1)) == 0:  # scale = 2^n
             for _ in range(int(math.log(scale, 2))):
@@ -201,6 +281,15 @@ class Downsample(nn.Sequential):
 class Upsample(nn.Sequential):
     """Upsample layer using PixelShuffle"""
     def __init__(self, scale, num_feat):
+        """Initialize the `Upsample` instance.
+
+        Args:
+            scale: Input parameter `scale`.
+            num_feat: Input parameter `num_feat`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         m = []
         if (scale & (scale - 1)) == 0:  # scale = 2^n
             for _ in range(int(math.log(scale, 2))):
@@ -219,6 +308,18 @@ class BlockupSpecTrans(nn.Module):
     Blockup với SSAM + Spectral Transformer modules
     """
     def __init__(self, dim, upscale, fusion_mode='sequential', use_spectrans=True, spectrans_depth=2):
+        """Initialize the `BlockupSpecTrans` instance.
+
+        Args:
+            dim: Input parameter `dim`.
+            upscale: Input parameter `upscale`.
+            fusion_mode: Input parameter `fusion_mode`.
+            use_spectrans: Input parameter `use_spectrans`.
+            spectrans_depth: Input parameter `spectrans_depth`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         super(BlockupSpecTrans, self).__init__()
         
         self.convup = ConvupSpecTrans(dim, fusion_mode, use_spectrans, spectrans_depth)
@@ -228,6 +329,14 @@ class BlockupSpecTrans(nn.Module):
 
     def forward(self, x):
         # Progressive refinement with skip connections
+        """Run the forward computation for this module.
+
+        Args:
+            x: Input parameter `x`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         xup = self.convupsample(x)
         x1 = self.convup(xup)
         
@@ -265,14 +374,19 @@ class ESSA_SSAM_SpecTrans(nn.Module):
     
     def __init__(self, dataset=None, inch=None, dim=128, upscale=4, fusion_mode='sequential', 
                  use_spectrans=True, spectrans_depth=2):
-        """
+        """Initialize the `ESSA_SSAM_SpecTrans` instance.
+
         Args:
-            inch: Số kênh input (31 cho CAVE/Harvard)
-            dim: Số feature channels
-            upscale: Upscale factor (2, 4, 8)
-            fusion_mode: SSAM fusion mode ('sequential', 'parallel', 'adaptive')
-            use_spectrans: Whether to use Spectral Transformer
-            spectrans_depth: Number of Spectral Transformer blocks
+            dataset: Input parameter `dataset`.
+            inch: Input parameter `inch`.
+            dim: Input parameter `dim`.
+            upscale: Input parameter `upscale`.
+            fusion_mode: Input parameter `fusion_mode`.
+            use_spectrans: Input parameter `use_spectrans`.
+            spectrans_depth: Input parameter `spectrans_depth`.
+
+        Returns:
+            None: This method initializes state and returns no value.
         """
         super(ESSA_SSAM_SpecTrans, self).__init__()
         
@@ -306,11 +420,13 @@ class ESSA_SSAM_SpecTrans(nn.Module):
         self.conv_last = nn.Conv2d(dim, inch, 3, 1, 1)
 
     def forward(self, x):
-        """
+        """Run the forward computation for this module.
+
         Args:
-            x: [B, C, H, W] - Low resolution hyperspectral image
+            x: Input parameter `x`.
+
         Returns:
-            out: [B, C, H*upscale, W*upscale] - High resolution output
+            Any: Output produced by this function.
         """
         x = self.conv_first(x)
         x = self.blockup(x)
@@ -319,10 +435,26 @@ class ESSA_SSAM_SpecTrans(nn.Module):
     
     @classmethod
     def from_dataset(cls, dataset, **kwargs):
+        """Execute `from_dataset`.
+
+        Args:
+            dataset: Input parameter `dataset`.
+            **kwargs: Input parameter `**kwargs`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         return cls(dataset=dataset, **kwargs)
     
     def get_model_info(self):
-        """Trả về thông tin model để report trong khóa luận"""
+        """Execute `get_model_info`.
+
+        Args:
+            None.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         num_params = sum(p.numel() for p in self.parameters())
         return {
             'model_name': 'ESSA-SSAM-SpecTrans',

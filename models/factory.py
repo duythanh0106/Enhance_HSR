@@ -16,7 +16,20 @@ def build_model_by_name(
     use_spectrans=True,
     spectrans_depth=2,
 ):
-    """Instantiate a model from explicit arguments."""
+    """Execute `build_model_by_name`.
+
+    Args:
+        model_name: Input parameter `model_name`.
+        num_bands: Input parameter `num_bands`.
+        feature_dim: Input parameter `feature_dim`.
+        upscale: Input parameter `upscale`.
+        fusion_mode: Input parameter `fusion_mode`.
+        use_spectrans: Input parameter `use_spectrans`.
+        spectrans_depth: Input parameter `spectrans_depth`.
+
+    Returns:
+        Any: Output produced by this function.
+    """
     if model_name in {"ESSA_Original", "ESSA"}:
         return ESSA(inch=num_bands, dim=feature_dim, upscale=upscale)
 
@@ -42,12 +55,14 @@ def build_model_by_name(
 
 
 def build_model_from_config(config, num_bands_override=None):
-    """
-    Build model from config dict/object.
+    """Execute `build_model_from_config`.
 
     Args:
-        config: dict-like or object with attributes.
-        num_bands_override: detected number of spectral bands to enforce.
+        config: Input parameter `config`.
+        num_bands_override: Input parameter `num_bands_override`.
+
+    Returns:
+        Any: Output produced by this function.
     """
     if isinstance(config, dict):
         model_name = config.get("model_name", "ESSA_SSAM")
@@ -86,12 +101,14 @@ def build_model_from_config(config, num_bands_override=None):
 
 
 def _adapt_state_dict_for_model(model, state_dict):
-    """
-    Adapt legacy/new weight shapes for SpectralTransformer attention layers.
+    """Internal helper for `adapt_state_dict_for_model` operations.
 
-    Supports:
-    - Linear -> Conv1d(1x1): [out, in] -> [out, in, 1]
-    - Conv1d(1x1) -> Linear: [out, in, 1] -> [out, in]
+    Args:
+        model: Input parameter `model`.
+        state_dict: Input parameter `state_dict`.
+
+    Returns:
+        Any: Output produced by this function.
     """
     target = model.state_dict()
     adapted = {}
@@ -125,8 +142,15 @@ def _adapt_state_dict_for_model(model, state_dict):
 
 
 def load_state_dict_compat(model, state_dict, strict=True):
-    """
-    Load checkpoint weights with backward/forward compatibility adaptations.
+    """Execute `load_state_dict_compat`.
+
+    Args:
+        model: Input parameter `model`.
+        state_dict: Input parameter `state_dict`.
+        strict: Input parameter `strict`.
+
+    Returns:
+        Any: Output produced by this function.
     """
     adapted_state_dict, converted_keys = _adapt_state_dict_for_model(model, state_dict)
     load_result = model.load_state_dict(adapted_state_dict, strict=strict)

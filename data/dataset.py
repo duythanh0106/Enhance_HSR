@@ -18,9 +18,13 @@ except ImportError:  # pragma: no cover - optional dependency at runtime
 
 
 def _to_hwc_cube(img):
-    """
-    Normalize cube layout to HxWxC by assuming the spectral dimension is the
-    smallest axis (typical for hyperspectral data).
+    """Internal helper for `to_hwc_cube` operations.
+
+    Args:
+        img: Input parameter `img`.
+
+    Returns:
+        Any: Output produced by this function.
     """
     if img.ndim != 3:
         raise ValueError(f"Expected 3D hyperspectral cube, got shape={img.shape}")
@@ -34,6 +38,15 @@ def _to_hwc_cube(img):
 
 
 def _extract_hsi_from_mat_dict(mat_data, path):
+    """Internal helper for `extract_hsi_from_mat_dict` operations.
+
+    Args:
+        mat_data: Input parameter `mat_data`.
+        path: Input parameter `path`.
+
+    Returns:
+        Any: Output produced by this function.
+    """
     possible_keys = ['rad', 'cube', 'ref', 'data', 'img', 'chikusei']
 
     for key in possible_keys:
@@ -55,6 +68,14 @@ def _extract_hsi_from_mat_dict(mat_data, path):
 
 
 def _load_hdf5_hyperspectral_image(path):
+    """Internal helper for `load_hdf5_hyperspectral_image` operations.
+
+    Args:
+        path: Input parameter `path`.
+
+    Returns:
+        Any: Output produced by this function.
+    """
     if h5py is None:
         raise ValueError(
             f"{path} appears to be MATLAB v7.3, but h5py is not installed."
@@ -69,6 +90,15 @@ def _load_hdf5_hyperspectral_image(path):
         candidates = []
 
         def visitor(name, obj):
+            """Execute `visitor`.
+
+            Args:
+                name: Input parameter `name`.
+                obj: Input parameter `obj`.
+
+            Returns:
+                None: This function returns no value.
+            """
             if isinstance(obj, h5py.Dataset) and len(obj.shape) == 3:
                 candidates.append(name)
 
@@ -82,7 +112,14 @@ def _load_hdf5_hyperspectral_image(path):
 
 
 def load_hyperspectral_image(path):
-    """Load a hyperspectral cube from .mat file."""
+    """Execute `load_hyperspectral_image`.
+
+    Args:
+        path: Input parameter `path`.
+
+    Returns:
+        Any: Output produced by this function.
+    """
     try:
         mat_data = sio.loadmat(path)
         img = _extract_hsi_from_mat_dict(mat_data, path)
@@ -94,19 +131,84 @@ def load_hyperspectral_image(path):
 
 
 def normalize_image(img):
-    """Min-max normalize cube to [0, 1]."""
+    """Execute `normalize_image`.
+
+    Args:
+        img: Input parameter `img`.
+
+    Returns:
+        Any: Output produced by this function.
+    """
     img_min, img_max = img.min(), img.max()
     if img_max - img_min > 0:
         img = (img - img_min) / (img_max - img_min)
     return img
 
 
-def downsample_mean(img, scale):
-    """
-    Downsample by block averaging using vectorized operations.
+def build_split_kwargs(upscale=4, split_seed=42, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1,
+                       force_regenerate_split=False):
+    """Execute `build_split_kwargs`.
 
-    Keeps the same semantics as old loop implementation: truncate borders that
-    do not fit into full `scale x scale` blocks.
+    Args:
+        upscale: Input parameter `upscale`.
+        split_seed: Input parameter `split_seed`.
+        train_ratio: Input parameter `train_ratio`.
+        val_ratio: Input parameter `val_ratio`.
+        test_ratio: Input parameter `test_ratio`.
+        force_regenerate_split: Input parameter `force_regenerate_split`.
+
+    Returns:
+        Any: Output produced by this function.
+    """
+    return {
+        'upscale': upscale,
+        'split_seed': split_seed,
+        'train_ratio': train_ratio,
+        'val_ratio': val_ratio,
+        'test_ratio': test_ratio,
+        'force_regenerate_split': force_regenerate_split,
+    }
+
+
+def load_dataset_with_fallback(dataset_cls, primary_split, fallback_split='train', log_fn=print, **kwargs):
+    """Execute `load_dataset_with_fallback`.
+
+    Args:
+        dataset_cls: Input parameter `dataset_cls`.
+        primary_split: Input parameter `primary_split`.
+        fallback_split: Input parameter `fallback_split`.
+        log_fn: Input parameter `log_fn`.
+        **kwargs: Input parameter `**kwargs`.
+
+    Returns:
+        Any: Output produced by this function.
+    """
+    try:
+        dataset = dataset_cls(split=primary_split, **kwargs)
+        return dataset, primary_split
+    except ValueError as exc:
+        message = str(exc)
+        expected = f"No images found for split '{primary_split}'"
+        if expected not in message or fallback_split is None:
+            raise
+        if log_fn is not None:
+            log_fn(
+                f"⚠️ Split '{primary_split}' is empty. "
+                f"Falling back to split='{fallback_split}'."
+            )
+        dataset = dataset_cls(split=fallback_split, **kwargs)
+        return dataset, fallback_split
+
+
+def downsample_mean(img, scale):
+    """Execute `downsample_mean`.
+
+    Args:
+        img: Input parameter `img`.
+        scale: Input parameter `scale`.
+
+    Returns:
+        Any: Output produced by this function.
     """
     h, w, c = img.shape
     new_h, new_w = h // scale, w // scale
@@ -115,6 +217,53 @@ def downsample_mean(img, scale):
 
     trimmed = img[:new_h * scale, :new_w * scale, :]
     return trimmed.reshape(new_h, scale, new_w, scale, c).mean(axis=(1, 3)).astype(np.float32)
+
+
+def _load_hyperspectral_image_or_none(path):
+    """Internal helper for `load_hyperspectral_image_or_none` operations.
+
+    Args:
+        path: Input parameter `path`.
+
+    Returns:
+        Any: Output produced by this function.
+    """
+    try:
+        return load_hyperspectral_image(path)
+    except Exception as e:
+        print(f"Error loading {path}: {e}")
+        return None
+
+
+def _filter_valid_hsi_paths(paths, split):
+    """Internal helper for `filter_valid_hsi_paths` operations.
+
+    Args:
+        paths: Input parameter `paths`.
+        split: Input parameter `split`.
+
+    Returns:
+        Any: Output produced by this function.
+    """
+    valid = []
+    skipped = []
+    for path in paths:
+        if is_hyperspectral_mat(path):
+            valid.append(path)
+        else:
+            skipped.append(path)
+
+    if skipped:
+        print(
+            f"⚠️ Skipping {len(skipped)} invalid/non-hyperspectral file(s) "
+            f"in split '{split}'."
+        )
+        for bad in skipped[:5]:
+            print(f"   - {bad}")
+        if len(skipped) > 5:
+            print(f"   ... and {len(skipped) - 5} more")
+
+    return valid
 
 
 # ==========================================================
@@ -134,8 +283,28 @@ class HyperspectralDataset(Dataset):
     def __init__(self, data_root, patch_size=128,
                  upscale=4, augment=True, split='train',
                  split_seed=42, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1,
-                 force_regenerate_split=False, virtual_samples_per_epoch=0):
+                 force_regenerate_split=False, virtual_samples_per_epoch=0,
+                 cache_in_memory=False):
 
+        """Initialize the `HyperspectralDataset` instance.
+
+        Args:
+            data_root: Input parameter `data_root`.
+            patch_size: Input parameter `patch_size`.
+            upscale: Input parameter `upscale`.
+            augment: Input parameter `augment`.
+            split: Input parameter `split`.
+            split_seed: Input parameter `split_seed`.
+            train_ratio: Input parameter `train_ratio`.
+            val_ratio: Input parameter `val_ratio`.
+            test_ratio: Input parameter `test_ratio`.
+            force_regenerate_split: Input parameter `force_regenerate_split`.
+            virtual_samples_per_epoch: Input parameter `virtual_samples_per_epoch`.
+            cache_in_memory: Input parameter `cache_in_memory`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         self.data_root = data_root
         self.patch_size = patch_size
         self.upscale = upscale
@@ -147,6 +316,8 @@ class HyperspectralDataset(Dataset):
         self.test_ratio = test_ratio
         self.force_regenerate_split = force_regenerate_split
         self.virtual_samples_per_epoch = max(0, int(virtual_samples_per_epoch or 0))
+        self.cache_in_memory = bool(cache_in_memory)
+        self._image_cache = {}
 
         # --------------------------------------------------
         # Create split if not exists
@@ -167,18 +338,32 @@ class HyperspectralDataset(Dataset):
         else:
             self.image_paths = get_split(data_root, split)
 
-        self.image_paths = self._filter_valid_paths(self.image_paths)
+        self.image_paths = _filter_valid_hsi_paths(self.image_paths, self.split)
         if len(self.image_paths) == 0:
             raise ValueError(f"No images found for split '{split}' in {data_root}")
+
+        if self.cache_in_memory:
+            print(f"Caching {len(self.image_paths)} image(s) for split '{self.split}' into memory...")
+            for path in self.image_paths:
+                img = _load_hyperspectral_image_or_none(path)
+                if img is None:
+                    raise RuntimeError(
+                        f"Failed to preload hyperspectral image for cache: {path}"
+                    )
+                self._image_cache[path] = img
+            print(f"✅ Cached {len(self._image_cache)} image(s) in memory.")
 
         # --------------------------------------------------
         # Auto detect spectral bands
         # --------------------------------------------------
         sample = None
-        for path in self.image_paths:
-            sample = self._load_hyperspectral_image(path)
-            if sample is not None:
-                break
+        if self.cache_in_memory and self.image_paths:
+            sample = self._image_cache[self.image_paths[0]]
+        else:
+            for path in self.image_paths:
+                sample = _load_hyperspectral_image_or_none(path)
+                if sample is not None:
+                    break
         if sample is None:
             raise ValueError("Cannot determine number of spectral bands.")
 
@@ -193,49 +378,42 @@ class HyperspectralDataset(Dataset):
 
     # ------------------------------------------------------
 
-    def _load_hyperspectral_image(self, path):
-        try:
-            return load_hyperspectral_image(path)
-        except Exception as e:
-            print(f"Error loading {path}: {e}")
-            return None
-
-    # ------------------------------------------------------
-
-    def _filter_valid_paths(self, paths):
-        valid = []
-        skipped = []
-        for path in paths:
-            if is_hyperspectral_mat(path):
-                valid.append(path)
-            else:
-                skipped.append(path)
-
-        if skipped:
-            print(
-                f"⚠️ Skipping {len(skipped)} invalid/non-hyperspectral file(s) "
-                f"in split '{self.split}'."
-            )
-            for bad in skipped[:5]:
-                print(f"   - {bad}")
-            if len(skipped) > 5:
-                print(f"   ... and {len(skipped) - 5} more")
-
-        return valid
-
-    # ------------------------------------------------------
-
     def _normalize(self, img):
+        """Internal helper for `normalize` operations.
+
+        Args:
+            img: Input parameter `img`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         return normalize_image(img)
 
     # ------------------------------------------------------
 
     def _downsample(self, img, scale):
+        """Internal helper for `downsample` operations.
+
+        Args:
+            img: Input parameter `img`.
+            scale: Input parameter `scale`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         return downsample_mean(img, scale)
 
     # ------------------------------------------------------
 
     def _random_crop(self, img):
+        """Internal helper for `random_crop` operations.
+
+        Args:
+            img: Input parameter `img`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         h, w, _ = img.shape
 
         if h >= self.patch_size and w >= self.patch_size:
@@ -254,6 +432,15 @@ class HyperspectralDataset(Dataset):
     # ------------------------------------------------------
 
     def _augment(self, lr, hr):
+        """Internal helper for `augment` operations.
+
+        Args:
+            lr: Input parameter `lr`.
+            hr: Input parameter `hr`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         if random.random() > 0.5:
             lr = np.flip(lr, axis=1).copy()
             hr = np.flip(hr, axis=1).copy()
@@ -271,6 +458,14 @@ class HyperspectralDataset(Dataset):
     # ------------------------------------------------------
 
     def __len__(self):
+        """Internal helper for `len__` operations.
+
+        Args:
+            None.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         if self.virtual_samples_per_epoch > 0:
             return self.virtual_samples_per_epoch
         return len(self.image_paths)
@@ -278,11 +473,23 @@ class HyperspectralDataset(Dataset):
     # ------------------------------------------------------
 
     def __getitem__(self, idx):
+        """Internal helper for `getitem__` operations.
+
+        Args:
+            idx: Input parameter `idx`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         real_idx = idx % len(self.image_paths)
-        img = self._load_hyperspectral_image(self.image_paths[real_idx])
+        image_path = self.image_paths[real_idx]
+        if self.cache_in_memory:
+            img = self._image_cache.get(image_path)
+        else:
+            img = _load_hyperspectral_image_or_none(image_path)
 
         if img is None:
-            bad_path = self.image_paths[real_idx]
+            bad_path = image_path
             raise RuntimeError(
                 f"Failed to load hyperspectral image: {bad_path}. "
                 "Please verify the .mat file integrity and keys."
@@ -312,8 +519,24 @@ class HyperspectralTestDataset(Dataset):
 
     def __init__(self, data_root, split='test', upscale=4,
                  split_seed=42, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1,
-                 force_regenerate_split=False):
+                 force_regenerate_split=False, cache_in_memory=False):
 
+        """Initialize the `HyperspectralTestDataset` instance.
+
+        Args:
+            data_root: Input parameter `data_root`.
+            split: Input parameter `split`.
+            upscale: Input parameter `upscale`.
+            split_seed: Input parameter `split_seed`.
+            train_ratio: Input parameter `train_ratio`.
+            val_ratio: Input parameter `val_ratio`.
+            test_ratio: Input parameter `test_ratio`.
+            force_regenerate_split: Input parameter `force_regenerate_split`.
+            cache_in_memory: Input parameter `cache_in_memory`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         self.data_root = data_root
         self.split = split
         self.upscale = upscale
@@ -322,6 +545,8 @@ class HyperspectralTestDataset(Dataset):
         self.val_ratio = val_ratio
         self.test_ratio = test_ratio
         self.force_regenerate_split = force_regenerate_split
+        self.cache_in_memory = bool(cache_in_memory)
+        self._image_cache = {}
 
         split_file = os.path.join(data_root, "split.json")
         if force_regenerate_split or not os.path.exists(split_file):
@@ -335,16 +560,30 @@ class HyperspectralTestDataset(Dataset):
             )
 
         self.image_paths = get_split(data_root, split)
-        self.image_paths = self._filter_valid_paths(self.image_paths)
+        self.image_paths = _filter_valid_hsi_paths(self.image_paths, self.split)
 
         if len(self.image_paths) == 0:
             raise ValueError(f"No images found for split '{split}'")
 
+        if self.cache_in_memory:
+            print(f"Caching {len(self.image_paths)} image(s) for split '{self.split}' into memory...")
+            for path in self.image_paths:
+                img = _load_hyperspectral_image_or_none(path)
+                if img is None:
+                    raise RuntimeError(
+                        f"Failed to preload test hyperspectral image for cache: {path}"
+                    )
+                self._image_cache[path] = img
+            print(f"✅ Cached {len(self._image_cache)} image(s) in memory.")
+
         sample = None
-        for path in self.image_paths:
-            sample = self._load_hyperspectral_image(path)
-            if sample is not None:
-                break
+        if self.cache_in_memory and self.image_paths:
+            sample = self._image_cache[self.image_paths[0]]
+        else:
+            for path in self.image_paths:
+                sample = _load_hyperspectral_image_or_none(path)
+                if sample is not None:
+                    break
         if sample is None:
             raise ValueError("Cannot determine number of spectral bands for test dataset.")
         self.num_bands = sample.shape[2]
@@ -354,48 +593,36 @@ class HyperspectralTestDataset(Dataset):
 
     # ------------------------------------------------------
 
-    def _load_hyperspectral_image(self, path):
-        try:
-            return load_hyperspectral_image(path)
-        except Exception as e:
-            print(f"Error loading {path}: {e}")
-            return None
-
-    # ------------------------------------------------------
-
-    def _filter_valid_paths(self, paths):
-        valid = []
-        skipped = []
-        for path in paths:
-            if is_hyperspectral_mat(path):
-                valid.append(path)
-            else:
-                skipped.append(path)
-
-        if skipped:
-            print(
-                f"⚠️ Skipping {len(skipped)} invalid/non-hyperspectral file(s) "
-                f"in split '{self.split}'."
-            )
-            for bad in skipped[:5]:
-                print(f"   - {bad}")
-            if len(skipped) > 5:
-                print(f"   ... and {len(skipped) - 5} more")
-
-        return valid
-
-    # ------------------------------------------------------
-
     def __len__(self):
+        """Internal helper for `len__` operations.
+
+        Args:
+            None.
+
+        Returns:
+            Any: Output produced by this function.
+        """
         return len(self.image_paths)
 
     # ------------------------------------------------------
 
     def __getitem__(self, idx):
 
-        img = self._load_hyperspectral_image(self.image_paths[idx])
+        """Internal helper for `getitem__` operations.
+
+        Args:
+            idx: Input parameter `idx`.
+
+        Returns:
+            Any: Output produced by this function.
+        """
+        image_path = self.image_paths[idx]
+        if self.cache_in_memory:
+            img = self._image_cache.get(image_path)
+        else:
+            img = _load_hyperspectral_image_or_none(image_path)
         if img is None:
-            bad_path = self.image_paths[idx]
+            bad_path = image_path
             raise RuntimeError(
                 f"Failed to load test hyperspectral image: {bad_path}. "
                 "Please verify the .mat file integrity and keys."
@@ -412,4 +639,4 @@ class HyperspectralTestDataset(Dataset):
         lr = torch.from_numpy(lr.transpose(2, 0, 1))
         hr = torch.from_numpy(img.transpose(2, 0, 1))
 
-        return lr, hr, self.image_paths[idx]
+        return lr, hr, image_path

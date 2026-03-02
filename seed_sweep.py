@@ -18,7 +18,6 @@ python3 seed_sweep.py \
 import argparse
 import csv
 import json
-import math
 import os
 import time
 from datetime import datetime
@@ -27,37 +26,28 @@ import torch
 from torch.utils.data import DataLoader
 
 from config import (
-    Config,
-    ConfigBaseline,
-    ConfigProposed,
-    ConfigLightweight,
-    ConfigSpecTrans,
-    ConfigUniversalBest,
+    CONFIG_PRESET_CHOICES,
+    build_config,
 )
-from data.dataset import HyperspectralTestDataset
+from data.dataset import HyperspectralTestDataset, build_split_kwargs, load_dataset_with_fallback
 from models.factory import build_model_from_config, load_state_dict_compat
-from test_full_image import forward_chop
 from train import Trainer
 from utils.device import resolve_device
+from utils.inference import forward_chop
 from utils.metrics import calculate_psnr, calculate_ssim, calculate_sam, calculate_ergas
-
-
-def build_config(name: str):
-    key = (name or "default").lower()
-    if key == "baseline":
-        return ConfigBaseline()
-    if key == "proposed":
-        return ConfigProposed()
-    if key == "spectrans":
-        return ConfigSpecTrans()
-    if key == "lightweight":
-        return ConfigLightweight()
-    if key == "universal_best":
-        return ConfigUniversalBest()
-    return Config()
+from utils.scoring import compute_selection_score_from_config
+from utils.time_utils import format_duration
 
 
 def parse_seeds(text: str):
+    """Execute `parse_seeds`.
+
+    Args:
+        text: Input parameter `text`.
+
+    Returns:
+        Any: Output produced by this function.
+    """
     seeds = []
     for token in (text or "").split(","):
         token = token.strip()
@@ -69,49 +59,22 @@ def parse_seeds(text: str):
     return seeds
 
 
-def format_duration(seconds):
-    total = int(max(0, float(seconds)))
-    h, rem = divmod(total, 3600)
-    m, s = divmod(rem, 60)
-    if h > 0:
-        return f"{h:02d}:{m:02d}:{s:02d}"
-    return f"{m:02d}:{s:02d}"
-
-
-def clamp01(value):
-    return max(0.0, min(1.0, float(value)))
-
-
-def compute_selection_score(metrics, cfg_dict):
-    mode = str(cfg_dict.get("best_selection_metric", "psnr")).lower()
-    if mode == "psnr":
-        return float(metrics["PSNR"])
-
-    weights = cfg_dict.get("best_score_weights", {}) or {}
-    refs = cfg_dict.get("best_score_refs", {}) or {}
-    w_psnr = float(weights.get("psnr", 0.45))
-    w_ssim = float(weights.get("ssim", 0.25))
-    w_sam = float(weights.get("sam", 0.20))
-    w_ergas = float(weights.get("ergas", 0.10))
-
-    psnr_ref = float(refs.get("psnr", 50.0))
-    sam_ref = float(refs.get("sam", 10.0))
-    ergas_ref = float(refs.get("ergas", 20.0))
-
-    psnr_score = clamp01(float(metrics["PSNR"]) / max(psnr_ref, 1e-6))
-    ssim_score = clamp01(float(metrics["SSIM"]))
-    sam_score = clamp01(1.0 - float(metrics["SAM"]) / max(sam_ref, 1e-6))
-    ergas_score = clamp01(1.0 - float(metrics["ERGAS"]) / max(ergas_ref, 1e-6))
-    return (
-        w_psnr * psnr_score
-        + w_ssim * ssim_score
-        + w_sam * sam_score
-        + w_ergas * ergas_score
-    )
-
-
 @torch.no_grad()
 def evaluate_full_image_split(model, dataloader, scale, device, crop_border, chop_patch_size, chop_overlap):
+    """Execute `evaluate_full_image_split`.
+
+    Args:
+        model: Input parameter `model`.
+        dataloader: Input parameter `dataloader`.
+        scale: Input parameter `scale`.
+        device: Input parameter `device`.
+        crop_border: Input parameter `crop_border`.
+        chop_patch_size: Input parameter `chop_patch_size`.
+        chop_overlap: Input parameter `chop_overlap`.
+
+    Returns:
+        Any: Output produced by this function.
+    """
     model.eval()
     psnr_list = []
     ssim_list = []
@@ -162,43 +125,47 @@ def evaluate_full_image_split(model, dataloader, scale, device, crop_border, cho
 
 
 def load_val_dataset(config_dict, data_root, split_name):
-    split_seed = config_dict.get("split_seed", 42)
-    train_ratio = config_dict.get("train_ratio", 0.8)
-    val_ratio = config_dict.get("val_ratio", 0.1)
-    test_ratio = config_dict.get("test_ratio", 0.1)
-    regenerate_split = config_dict.get("regenerate_split", False)
-    upscale = config_dict.get("upscale_factor", 4)
+    """Execute `load_val_dataset`.
 
-    try:
-        ds = HyperspectralTestDataset(
-            data_root=data_root,
-            split=split_name,
-            upscale=upscale,
-            split_seed=split_seed,
-            train_ratio=train_ratio,
-            val_ratio=val_ratio,
-            test_ratio=test_ratio,
-            force_regenerate_split=regenerate_split,
-        )
-    except ValueError as exc:
-        msg = str(exc)
-        if f"No images found for split '{split_name}'" not in msg:
-            raise
-        print(f"⚠️ Split '{split_name}' is empty. Falling back to split='train'.")
-        ds = HyperspectralTestDataset(
-            data_root=data_root,
-            split="train",
-            upscale=upscale,
-            split_seed=split_seed,
-            train_ratio=train_ratio,
-            val_ratio=val_ratio,
-            test_ratio=test_ratio,
-            force_regenerate_split=regenerate_split,
-        )
+    Args:
+        config_dict: Input parameter `config_dict`.
+        data_root: Input parameter `data_root`.
+        split_name: Input parameter `split_name`.
+
+    Returns:
+        Any: Output produced by this function.
+    """
+    split_kwargs = build_split_kwargs(
+        upscale=config_dict.get("upscale_factor", 4),
+        split_seed=config_dict.get("split_seed", 42),
+        train_ratio=config_dict.get("train_ratio", 0.8),
+        val_ratio=config_dict.get("val_ratio", 0.1),
+        test_ratio=config_dict.get("test_ratio", 0.1),
+        force_regenerate_split=config_dict.get("regenerate_split", False),
+    )
+    ds, _ = load_dataset_with_fallback(
+        dataset_cls=HyperspectralTestDataset,
+        primary_split=split_name,
+        fallback_split="train",
+        data_root=data_root,
+        log_fn=print,
+        **split_kwargs,
+    )
     return ds
 
 
 def evaluate_checkpoint_on_full_image_val(checkpoint_path, data_root, split_name, args):
+    """Execute `evaluate_checkpoint_on_full_image_val`.
+
+    Args:
+        checkpoint_path: Input parameter `checkpoint_path`.
+        data_root: Input parameter `data_root`.
+        split_name: Input parameter `split_name`.
+        args: Input parameter `args`.
+
+    Returns:
+        Any: Output produced by this function.
+    """
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
     config_dict = checkpoint.get("config", {})
     device = resolve_device(args.eval_device or config_dict.get("device", "auto"))
@@ -244,6 +211,15 @@ def evaluate_checkpoint_on_full_image_val(checkpoint_path, data_root, split_name
 
 
 def run_one_seed(args, seed):
+    """Execute `run_one_seed`.
+
+    Args:
+        args: Input parameter `args`.
+        seed: Input parameter `seed`.
+
+    Returns:
+        Any: Output produced by this function.
+    """
     seed_start = time.time()
     cfg = build_config(args.config)
     if args.data_root:
@@ -283,7 +259,7 @@ def run_one_seed(args, seed):
     patch_metrics = ckpt.get("metrics", {})
     patch_score = ckpt.get("selection_score")
     if patch_score is None and patch_metrics:
-        patch_score = compute_selection_score(patch_metrics, ckpt.get("config", {}))
+        patch_score = compute_selection_score_from_config(patch_metrics, ckpt.get("config", {}))
 
     result = {
         "seed": int(seed),
@@ -302,7 +278,7 @@ def run_one_seed(args, seed):
             split_name=args.val_split_name,
             args=args,
         )
-        full_score = compute_selection_score(full_metrics, cfg_dict)
+        full_score = compute_selection_score_from_config(full_metrics, cfg_dict)
         result["rank_score"] = float(full_score)
         result["val_full_image"] = full_metrics
     else:
@@ -316,6 +292,17 @@ def run_one_seed(args, seed):
 
 
 def save_results(output_dir, results, total_runtime_sec, args):
+    """Execute `save_results`.
+
+    Args:
+        output_dir: Input parameter `output_dir`.
+        results: Input parameter `results`.
+        total_runtime_sec: Input parameter `total_runtime_sec`.
+        args: Input parameter `args`.
+
+    Returns:
+        Any: Output produced by this function.
+    """
     os.makedirs(output_dir, exist_ok=True)
     json_path = os.path.join(output_dir, "seed_sweep_results.json")
     meta_path = os.path.join(output_dir, "seed_sweep_meta.json")
@@ -392,12 +379,20 @@ def save_results(output_dir, results, total_runtime_sec, args):
 
 
 def main():
+    """Execute the main entry-point workflow.
+
+    Args:
+        None.
+
+    Returns:
+        None: This function returns no value.
+    """
     parser = argparse.ArgumentParser(description="Sweep seeds for HSI-SR training")
     parser.add_argument(
         "--config",
         type=str,
         default="universal_best",
-        choices=["default", "baseline", "proposed", "spectrans", "lightweight", "universal_best"],
+        choices=CONFIG_PRESET_CHOICES,
         help="Config preset",
     )
     parser.add_argument("--data_root", type=str, required=True, help="Dataset root")
