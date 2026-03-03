@@ -142,7 +142,8 @@ def test_full_image(
         hr_np = hr_tensor.numpy()
         
         # Store per-image results
-        image_name = os.path.basename(filepath[0])
+        image_name = os.path.basename(filepath[0].rstrip(os.sep))
+        image_stem = os.path.splitext(image_name)[0]
         results_per_image.append({
             'image': image_name,
             'PSNR': float(psnr),
@@ -162,7 +163,7 @@ def test_full_image(
             os.makedirs(save_dir, exist_ok=True)
             
             # Save as .npy
-            save_path = os.path.join(save_dir, image_name.replace('.mat', '_SR.npy'))
+            save_path = os.path.join(save_dir, f"{image_stem}_SR.npy")
             np.save(save_path, sr_np)
             
             # Save RGB visualization
@@ -176,7 +177,7 @@ def test_full_image(
                 rgb = np.stack([r, g, b], axis=2)
                 rgb = np.clip(rgb, 0, 1)
                 
-                rgb_path = os.path.join(save_dir, image_name.replace('.mat', '_SR_RGB.png'))
+                rgb_path = os.path.join(save_dir, f"{image_stem}_SR_RGB.png")
                 plt.imsave(rgb_path, rgb)
 
     total_test_time = time.time() - test_start

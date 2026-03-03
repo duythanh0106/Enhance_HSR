@@ -4,17 +4,24 @@ Supports any hyperspectral dataset with automatic split & band detection
 """
 
 import os
+import glob
+import re
 import torch
 from torch.utils.data import Dataset
 import numpy as np
 import scipy.io as sio
 import random
-from .splits import generate_split, get_split, is_hyperspectral_mat
+from .splits import generate_split, get_split, is_hyperspectral_path
 
 try:
     import h5py
 except ImportError:  # pragma: no cover - optional dependency at runtime
     h5py = None
+
+try:
+    from PIL import Image
+except ImportError:  # pragma: no cover - optional dependency at runtime
+    Image = None
 
 
 def _to_hwc_cube(img):
@@ -111,6 +118,66 @@ def _load_hdf5_hyperspectral_image(path):
     raise ValueError(f"No hyperspectral data found in {path}")
 
 
+def _band_index_from_filename(path):
+    """Extract numeric band index from filename suffix like '*_ms_31.png'."""
+    match = re.search(r"_ms_(\d+)\.[^.]+$", os.path.basename(path), re.IGNORECASE)
+    return int(match.group(1)) if match else -1
+
+
+def _list_band_image_files(scene_dir):
+    """List spectral band image files for a scene directory."""
+    band_globs = (
+        "*_ms_*.png",
+        "*_ms_*.tif",
+        "*_ms_*.tiff",
+        "*_ms_*.bmp",
+        "*_ms_*.jpg",
+        "*_ms_*.jpeg",
+    )
+    band_paths = []
+    for pattern in band_globs:
+        band_paths.extend(glob.glob(os.path.join(scene_dir, pattern)))
+    # Keep deterministic order by band index, then by filename.
+    band_paths = sorted(set(band_paths), key=lambda p: (_band_index_from_filename(p), os.path.basename(p)))
+    return band_paths
+
+
+def _load_hyperspectral_scene_dir(scene_dir):
+    """Load hyperspectral cube from scene folder containing band images."""
+    if Image is None:
+        raise ValueError(
+            "Pillow is required to load hyperspectral scene folders from PNG/TIFF/BMP/JPEG files."
+        )
+
+    band_paths = _list_band_image_files(scene_dir)
+    if not band_paths:
+        raise ValueError(f"No spectral band images found in scene folder: {scene_dir}")
+
+    bands = []
+    ref_h, ref_w = None, None
+    for band_path in band_paths:
+        with Image.open(band_path) as band_img:
+            band_arr = np.asarray(band_img)
+        if band_arr.ndim == 3:
+            # Safety fallback for RGB-like files; keep single-channel intensity.
+            band_arr = band_arr[..., 0]
+        if band_arr.ndim != 2:
+            raise ValueError(f"Band image is not single-channel: {band_path} | shape={band_arr.shape}")
+
+        if ref_h is None:
+            ref_h, ref_w = band_arr.shape
+        elif band_arr.shape != (ref_h, ref_w):
+            raise ValueError(
+                f"Inconsistent band image size in {scene_dir}: "
+                f"expected {(ref_h, ref_w)}, got {band_arr.shape} at {band_path}"
+            )
+
+        bands.append(band_arr.astype(np.float32, copy=False))
+
+    # Stack to H x W x C.
+    return np.stack(bands, axis=2).astype(np.float32, copy=False)
+
+
 def load_hyperspectral_image(path):
     """Execute `load_hyperspectral_image`.
 
@@ -120,12 +187,15 @@ def load_hyperspectral_image(path):
     Returns:
         Any: Output produced by this function.
     """
-    try:
-        mat_data = sio.loadmat(path)
-        img = _extract_hsi_from_mat_dict(mat_data, path)
-    except NotImplementedError:
-        # MATLAB v7.3 files require HDF5 reader.
-        img = _load_hdf5_hyperspectral_image(path)
+    if os.path.isdir(path):
+        img = _load_hyperspectral_scene_dir(path)
+    else:
+        try:
+            mat_data = sio.loadmat(path)
+            img = _extract_hsi_from_mat_dict(mat_data, path)
+        except NotImplementedError:
+            # MATLAB v7.3 files require HDF5 reader.
+            img = _load_hdf5_hyperspectral_image(path)
 
     return img.astype(np.float32)
 
@@ -248,7 +318,7 @@ def _filter_valid_hsi_paths(paths, split):
     valid = []
     skipped = []
     for path in paths:
-        if is_hyperspectral_mat(path):
+        if is_hyperspectral_path(path):
             valid.append(path)
         else:
             skipped.append(path)
@@ -492,7 +562,7 @@ class HyperspectralDataset(Dataset):
             bad_path = image_path
             raise RuntimeError(
                 f"Failed to load hyperspectral image: {bad_path}. "
-                "Please verify the .mat file integrity and keys."
+                "Please verify sample path format and file integrity."
             )
 
         img = self._normalize(img)
@@ -625,7 +695,7 @@ class HyperspectralTestDataset(Dataset):
             bad_path = image_path
             raise RuntimeError(
                 f"Failed to load test hyperspectral image: {bad_path}. "
-                "Please verify the .mat file integrity and keys."
+                "Please verify sample path format and file integrity."
             )
 
         img = normalize_image(img)

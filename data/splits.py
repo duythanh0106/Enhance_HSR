@@ -1,6 +1,6 @@
 """
 Universal Train/Val/Test Split
-Works for ANY hyperspectral dataset (.mat files)
+Works for .mat cubes and scene-folder band stacks (e.g. CAVE *_ms_XX.png)
 
 - No hardcoded scene names
 - Fully reproducible
@@ -158,6 +158,48 @@ def is_hyperspectral_mat(path):
     return False
 
 
+def is_hyperspectral_scene_dir(path):
+    """Check if directory contains a spectral band stack (e.g. *_ms_01.png)."""
+    if not os.path.isdir(path):
+        return False
+    band_globs = (
+        "*_ms_*.png",
+        "*_ms_*.tif",
+        "*_ms_*.tiff",
+        "*_ms_*.bmp",
+        "*_ms_*.jpg",
+        "*_ms_*.jpeg",
+    )
+    for pattern in band_globs:
+        if glob.glob(os.path.join(path, pattern)):
+            return True
+    return False
+
+
+def is_hyperspectral_path(path):
+    """Check if `path` is a supported hyperspectral sample path."""
+    if os.path.isdir(path):
+        return is_hyperspectral_scene_dir(path)
+    if os.path.isfile(path) and path.lower().endswith(".mat"):
+        return is_hyperspectral_mat(path)
+    return False
+
+
+def _scan_hyperspectral_paths(data_root):
+    """Scan dataset root and return supported hyperspectral sample paths."""
+    mat_files = sorted(glob.glob(os.path.join(data_root, "*.mat")))
+    scene_dirs = []
+
+    # Recursively find scene folders that directly contain spectral bands.
+    for root, dirs, _ in os.walk(data_root):
+        # Skip hidden/system folders.
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        if is_hyperspectral_scene_dir(root):
+            scene_dirs.append(root)
+
+    return mat_files, sorted(set(scene_dirs))
+
+
 def generate_split(
     data_root,
     train_ratio=0.8,
@@ -180,15 +222,19 @@ def generate_split(
         Any: Output produced by this function.
     """
 
-    # 1️⃣ Scan files
-    files = sorted(glob.glob(os.path.join(data_root, "*.mat")))
+    # 1️⃣ Scan paths
+    mat_files, scene_dirs = _scan_hyperspectral_paths(data_root)
+    if len(mat_files) == 0 and len(scene_dirs) == 0:
+        raise ValueError(
+            f"No supported hyperspectral samples found in {data_root}\n"
+            "Expected either:\n"
+            "  - .mat files in data_root, or\n"
+            "  - scene folders containing spectral bands like '*_ms_XX.png'."
+        )
 
-    if len(files) == 0:
-        raise ValueError(f"No .mat files found in {data_root}")
-
-    valid_files = [f for f in files if is_hyperspectral_mat(f)]
-    valid_set = set(valid_files)
-    skipped_files = [f for f in files if f not in valid_set]
+    valid_mat_files = [f for f in mat_files if is_hyperspectral_mat(f)]
+    valid_set = set(valid_mat_files)
+    skipped_files = [f for f in mat_files if f not in valid_set]
     if skipped_files:
         print(f"⚠️ Skipping {len(skipped_files)} non-hyperspectral .mat file(s).")
         for skipped in skipped_files[:5]:
@@ -196,10 +242,11 @@ def generate_split(
         if len(skipped_files) > 5:
             print(f"   ... and {len(skipped_files) - 5} more")
 
+    valid_files = valid_mat_files + scene_dirs
     if len(valid_files) == 0:
         raise ValueError(
-            f"No valid hyperspectral .mat files found in {data_root}. "
-            "Expected at least one file containing a 3D hyperspectral cube."
+            f"No valid hyperspectral samples found in {data_root}. "
+            "Expected at least one valid .mat cube or scene folder with band images."
         )
 
     # 2️⃣ Shuffle reproducibly

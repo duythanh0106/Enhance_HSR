@@ -240,10 +240,10 @@ python3 -c "import models.essa_ssam_spectrans as m; print(hasattr(m, 'ESSA_SSAM_
 ```
 data/
 ├── CAVE/
-│   ├── balloons_ms.mat
-│   ├── beads_ms.mat
-│   ├── cd_ms.mat
-│   └── ... (32 scenes total)
+│   └── complete_ms_data/
+│       ├── balloons_ms/balloons_ms/balloons_ms_01.png ... balloons_ms_31.png
+│       ├── beads_ms/beads_ms/beads_ms_01.png ... beads_ms_31.png
+│       └── ... (32 scenes total)
 │
 ├── Harvard/
 │   ├── imgd1.mat
@@ -555,7 +555,7 @@ tail -f logs/<experiment_name>/training.log
 
 Điều kiện trước khi test/evaluate:
 - Có checkpoint `.pth` từ bước train
-- `data_root` chứa file `.mat` và có/được tạo `split.json`
+- `data_root` chứa dữ liệu HSI hợp lệ (`.mat` hoặc scene-folder dạng `*_ms_XX.png`) và có/được tạo `split.json`
 
 ```bash
 # Liệt kê checkpoint có sẵn
@@ -643,7 +643,7 @@ Average Metrics:
   Total Runtime        : 03:41:10 (13270.44 seconds)
 ```
 
-Nếu gặp lỗi `ValueError: No .mat files found in ./Harvard`, nguyên nhân là sai đường dẫn.
+Nếu gặp lỗi `ValueError: No supported hyperspectral samples found in ...`, nguyên nhân thường là sai đường dẫn hoặc sai cấu trúc dataset.
 Hãy dùng `--data_root ./data/Harvard` (không phải `./Harvard`).
 
 Dataset label được tự suy ra từ tên folder `data_root` (ví dụ `./data/Harvard` -> `Harvard`).
@@ -872,8 +872,8 @@ feature_dim = 64
 # Check dataset structure
 ls -R data/CAVE/
 
-# Should see .mat files
-# If not, download CAVE dataset first
+# Should see complete_ms_data/*/*_ms_XX.png (or .mat files for other datasets)
+# If not, download/unzip CAVE dataset correctly
 ```
 
 **3. Slow Training**
