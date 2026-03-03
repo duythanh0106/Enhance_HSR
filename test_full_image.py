@@ -26,6 +26,51 @@ from utils.device import resolve_device
 from utils.time_utils import format_duration
 
 
+def _choose_rgb_band_indices(num_bands):
+    """Select representative band indices for RGB visualization."""
+    if num_bands >= 31:
+        return 25, 15, 5
+    if num_bands >= 3:
+        r = int(round((num_bands - 1) * 0.8))
+        g = int(round((num_bands - 1) * 0.5))
+        b = int(round((num_bands - 1) * 0.2))
+        return r, g, b
+    return 0, 0, 0
+
+
+def _save_rgb_png(cube_chw, output_path):
+    """Save CHW hyperspectral cube as RGB PNG using representative bands."""
+    import matplotlib.pyplot as plt
+
+    r_idx, g_idx, b_idx = _choose_rgb_band_indices(int(cube_chw.shape[0]))
+    rgb = np.stack(
+        [
+            cube_chw[r_idx, :, :],
+            cube_chw[g_idx, :, :],
+            cube_chw[b_idx, :, :],
+        ],
+        axis=2,
+    )
+    rgb = np.clip(rgb, 0.0, 1.0)
+    plt.imsave(output_path, rgb)
+
+
+def _save_band_pngs(cube_chw, band_dir, file_prefix):
+    """Save each spectral band as grayscale PNG for quick visual inspection."""
+    import matplotlib.pyplot as plt
+
+    os.makedirs(band_dir, exist_ok=True)
+    num_bands = int(cube_chw.shape[0])
+    pad = max(2, len(str(num_bands)))
+    for band_idx in range(num_bands):
+        band = np.clip(cube_chw[band_idx, :, :], 0.0, 1.0)
+        band_path = os.path.join(
+            band_dir,
+            f"{file_prefix}_band_{band_idx + 1:0{pad}d}.png",
+        )
+        plt.imsave(band_path, band, cmap="gray", vmin=0.0, vmax=1.0)
+
+
 def remove_dir_if_effectively_empty(path):
     """Execute `remove_dir_if_effectively_empty`.
 
@@ -55,7 +100,8 @@ def test_full_image(
     crop_border=True,
     save_dir=None,
     chop_patch_size=32,
-    chop_overlap=8
+    chop_overlap=8,
+    save_band_png=False
 ):
     """Execute `test_full_image`.
 
@@ -68,6 +114,7 @@ def test_full_image(
         save_dir: Input parameter `save_dir`.
         chop_patch_size: Input parameter `chop_patch_size`.
         chop_overlap: Input parameter `chop_overlap`.
+        save_band_png: Input parameter `save_band_png`.
 
     Returns:
         Any: Output produced by this function.
@@ -162,23 +209,30 @@ def test_full_image(
         if save_dir is not None:
             os.makedirs(save_dir, exist_ok=True)
             
+            image_save_dir = os.path.join(save_dir, image_stem)
+            os.makedirs(image_save_dir, exist_ok=True)
+
             # Save as .npy
-            save_path = os.path.join(save_dir, f"{image_stem}_SR.npy")
+            save_path = os.path.join(image_save_dir, f"{image_stem}_SR.npy")
             np.save(save_path, sr_np)
-            
-            # Save RGB visualization
-            if sr_np.shape[0] >= 31:
-                import matplotlib.pyplot as plt
-                
-                r = sr_np[25, :, :]
-                g = sr_np[15, :, :]
-                b = sr_np[5, :, :]
-                
-                rgb = np.stack([r, g, b], axis=2)
-                rgb = np.clip(rgb, 0, 1)
-                
-                rgb_path = os.path.join(save_dir, f"{image_stem}_SR_RGB.png")
-                plt.imsave(rgb_path, rgb)
+
+            # Save RGB visualizations for SR/HR/LR.
+            _save_rgb_png(sr_np, os.path.join(image_save_dir, f"{image_stem}_SR_RGB.png"))
+            _save_rgb_png(hr_np, os.path.join(image_save_dir, f"{image_stem}_HR_RGB.png"))
+            _save_rgb_png(lr.squeeze(0).detach().cpu().numpy(), os.path.join(image_save_dir, f"{image_stem}_LR_RGB.png"))
+
+            # Optional: save all band images as grayscale PNGs.
+            if save_band_png:
+                _save_band_pngs(
+                    cube_chw=hr_np,
+                    band_dir=os.path.join(image_save_dir, "bands_hr"),
+                    file_prefix=f"{image_stem}_HR",
+                )
+                _save_band_pngs(
+                    cube_chw=sr_np,
+                    band_dir=os.path.join(image_save_dir, "bands_sr"),
+                    file_prefix=f"{image_stem}_SR",
+                )
 
     total_test_time = time.time() - test_start
 
@@ -249,6 +303,11 @@ def main():
     parser.set_defaults(crop_border=True)
     parser.add_argument('--save_images', action='store_true',
                        help='Save reconstructed images')
+    parser.add_argument(
+        '--save_band_png',
+        action='store_true',
+        help='When --save_images is enabled, also save every HR/SR band as grayscale PNG'
+    )
     parser.add_argument('--output_dir', type=str, default='./test_results',
                        help='Output directory for results')
     
@@ -315,6 +374,7 @@ def main():
     print(f"Chop overlap: {args.chop_overlap}")
     print(f"Crop border: {args.crop_border}")
     print(f"Save images: {args.save_images}")
+    print(f"Save band PNG: {args.save_band_png}")
     print("="*70)
     
     test_dataset, _ = load_dataset_with_fallback(
@@ -393,7 +453,8 @@ def main():
                 crop_border=args.crop_border,
                 save_dir=save_dir,
                 chop_patch_size=args.chop_patch_size,
-                chop_overlap=args.chop_overlap
+                chop_overlap=args.chop_overlap,
+                save_band_png=args.save_band_png
             )
         except RuntimeError as runtime_err:
             if device.type != "mps":
@@ -412,7 +473,8 @@ def main():
                 crop_border=args.crop_border,
                 save_dir=save_dir,
                 chop_patch_size=args.chop_patch_size,
-                chop_overlap=args.chop_overlap
+                chop_overlap=args.chop_overlap,
+                save_band_png=args.save_band_png
             )
 
         total_runtime_sec = time.time() - script_start

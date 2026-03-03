@@ -569,6 +569,22 @@ python3 test_full_image.py \
     --save_images
 ```
 
+Khi bật `--save_images`, mỗi ảnh test sẽ có thư mục riêng trong `test_results/.../images/<image_name>/` gồm:
+- `<image_name>_SR.npy`
+- `<image_name>_SR_RGB.png`
+- `<image_name>_HR_RGB.png`
+- `<image_name>_LR_RGB.png`
+
+Nếu muốn xuất toàn bộ từng band thành PNG để xem trực tiếp (tương tự kiểu `balloons_ms_XX`), thêm:
+
+```bash
+python3 test_full_image.py \
+    --checkpoint ./checkpoints/ESSA_SSAM_SpecTrans_xxx/best.pth \
+    --data_root <DATA_ROOT> \
+    --save_images \
+    --save_band_png
+```
+
 Ví dụ:
 
 ```bash
