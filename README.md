@@ -228,7 +228,6 @@ python3 -c "import models.essa_ssam_spectrans as m; print(hasattr(m, 'ESSA_SSAM_
    - 128 spectral bands (363-1018 nm)
    - Spatial resolution: 2517×2335
    - Download: https://naotoyokoya.com/Download.html
-
 4. **PaviaCentre Dataset**
    - 1 airborne hyperspectral scene (urban area)
    - 102 spectral bands
