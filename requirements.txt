@@ -24,3 +24,4 @@ tensorboard>=2.13.0
 # Optional (for advanced features)
 # timm>=0.9.0  # If using pre-trained models
 # wandb>=0.15.0  # For experiment tracking
+# optuna>=3.6.0  # For hyperparameter tuning (tune_optuna.py)

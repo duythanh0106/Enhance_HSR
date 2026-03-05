@@ -17,54 +17,69 @@ class SpectralMultiHeadAttention(nn.Module):
     """
     
     def __init__(self, num_bands=31, num_heads=4, dropout=0.1):
-        """
+        """Initialize the `SpectralMultiHeadAttention` instance.
+
         Args:
-            num_bands: Số spectral bands (31 cho CAVE/Harvard)
-            num_heads: Số attention heads (phải chia hết cho num_bands)
-            dropout: Dropout rate
+            num_bands: Input parameter `num_bands`.
+            num_heads: Input parameter `num_heads`.
+            dropout: Input parameter `dropout`.
+
+        Returns:
+            None: This method initializes state and returns no value.
         """
         super().__init__()
         
-        assert num_bands % num_heads == 0, f"num_bands ({num_bands}) must be divisible by num_heads ({num_heads})"
+        assert num_bands % num_heads == 0, (
+            f"num_bands ({num_bands}) must be divisible by num_heads ({num_heads})"
+        )
         
         self.num_bands = num_bands
         self.num_heads = num_heads
         self.head_dim = num_bands // num_heads
-        self.scale = self.head_dim ** -0.5
         
-        # Linear projections cho Q, K, V
-        self.qkv = nn.Linear(num_bands, num_bands * 3)
-        self.proj = nn.Linear(num_bands, num_bands)
+        # Learnable projections on spectral channels for each spatial position.
+        # Input in attention is reshaped to [B, C, N], N = H*W.
+        self.qkv = nn.Conv1d(num_bands, num_bands * 3, kernel_size=1)
+        self.proj = nn.Conv1d(num_bands, num_bands, kernel_size=1)
         
         self.dropout = nn.Dropout(dropout)
         
     def forward(self, x):
-        """
+        """Run the forward computation for this module.
+
         Args:
-            x: [B, N, C] với N = H*W (số pixels), C = num_bands
+            x: Input parameter `x`.
+
         Returns:
-            out: [B, N, C] với spectral attention applied
+            Any: Output produced by this function.
         """
         B, N, C = x.shape
-        
-        # Generate Q, K, V
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim)
-        qkv = qkv.permute(2, 0, 3, 1, 4)  # [3, B, num_heads, N, head_dim]
-        q, k, v = qkv[0], qkv[1], qkv[2]
-        
-        # Attention scores
-        attn = (q @ k.transpose(-2, -1)) * self.scale  # [B, num_heads, N, N]
+
+        # [B, N, C] -> [B, C, N] so attention is computed across spectral tokens.
+        x = x.transpose(1, 2).contiguous()
+
+        # Generate Q, K, V in spectral space: [B, 3C, N].
+        qkv = self.qkv(x)
+        q, k, v = qkv.chunk(3, dim=1)
+
+        # Split heads: [B, C, N] -> [B, heads, head_dim, N].
+        q = q.reshape(B, self.num_heads, self.head_dim, N)
+        k = k.reshape(B, self.num_heads, self.head_dim, N)
+        v = v.reshape(B, self.num_heads, self.head_dim, N)
+
+        # Attention over spectral dimension per head: [B, heads, head_dim, head_dim].
+        scale = 1.0 / math.sqrt(max(N, 1))
+        attn = torch.matmul(q, k.transpose(-2, -1)) * scale
         attn = attn.softmax(dim=-1)
         attn = self.dropout(attn)
-        
-        # Apply attention to values
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-        
-        # Output projection
+
+        # Apply spectral attention and merge heads back to [B, C, N].
+        x = torch.matmul(attn, v).reshape(B, C, N)
+
+        # Output projection then restore [B, N, C].
         x = self.proj(x)
         x = self.dropout(x)
-        
-        return x
+        return x.transpose(1, 2).contiguous()
 
 
 class SpectralFeedForward(nn.Module):
@@ -73,11 +88,15 @@ class SpectralFeedForward(nn.Module):
     """
     
     def __init__(self, num_bands=31, mlp_ratio=4.0, dropout=0.1):
-        """
+        """Initialize the `SpectralFeedForward` instance.
+
         Args:
-            num_bands: Số spectral bands
-            mlp_ratio: Expansion ratio cho hidden layer
-            dropout: Dropout rate
+            num_bands: Input parameter `num_bands`.
+            mlp_ratio: Input parameter `mlp_ratio`.
+            dropout: Input parameter `dropout`.
+
+        Returns:
+            None: This method initializes state and returns no value.
         """
         super().__init__()
         
@@ -89,11 +108,13 @@ class SpectralFeedForward(nn.Module):
         self.dropout = nn.Dropout(dropout)
         
     def forward(self, x):
-        """
+        """Run the forward computation for this module.
+
         Args:
-            x: [B, N, C]
+            x: Input parameter `x`.
+
         Returns:
-            out: [B, N, C]
+            Any: Output produced by this function.
         """
         x = self.fc1(x)
         x = self.act(x)
@@ -113,12 +134,16 @@ class SpectralTransformerBlock(nn.Module):
     """
     
     def __init__(self, num_bands=31, num_heads=4, mlp_ratio=4.0, dropout=0.1):
-        """
+        """Initialize the `SpectralTransformerBlock` instance.
+
         Args:
-            num_bands: Số spectral bands
-            num_heads: Số attention heads
-            mlp_ratio: FFN expansion ratio
-            dropout: Dropout rate
+            num_bands: Input parameter `num_bands`.
+            num_heads: Input parameter `num_heads`.
+            mlp_ratio: Input parameter `mlp_ratio`.
+            dropout: Input parameter `dropout`.
+
+        Returns:
+            None: This method initializes state and returns no value.
         """
         super().__init__()
         
@@ -129,11 +154,13 @@ class SpectralTransformerBlock(nn.Module):
         self.ffn = SpectralFeedForward(num_bands, mlp_ratio, dropout)
         
     def forward(self, x):
-        """
+        """Run the forward computation for this module.
+
         Args:
-            x: [B, N, C] với N = H*W, C = num_bands
+            x: Input parameter `x`.
+
         Returns:
-            out: [B, N, C]
+            Any: Output produced by this function.
         """
         # Multi-head attention with residual
         x = x + self.attn(self.norm1(x))
@@ -153,13 +180,17 @@ class SpectralTransformer(nn.Module):
     """
     
     def __init__(self, num_bands=31, depth=2, num_heads=4, mlp_ratio=4.0, dropout=0.1):
-        """
+        """Initialize the `SpectralTransformer` instance.
+
         Args:
-            num_bands: Số spectral bands (31 cho CAVE/Harvard)
-            depth: Số Transformer blocks
-            num_heads: Số attention heads
-            mlp_ratio: FFN expansion ratio
-            dropout: Dropout rate
+            num_bands: Input parameter `num_bands`.
+            depth: Input parameter `depth`.
+            num_heads: Input parameter `num_heads`.
+            mlp_ratio: Input parameter `mlp_ratio`.
+            dropout: Input parameter `dropout`.
+
+        Returns:
+            None: This method initializes state and returns no value.
         """
         super().__init__()
         
@@ -181,11 +212,13 @@ class SpectralTransformer(nn.Module):
         self.norm = nn.LayerNorm(num_bands)
         
     def forward(self, x):
-        """
+        """Run the forward computation for this module.
+
         Args:
-            x: [B, C, H, W] với C = num_bands
+            x: Input parameter `x`.
+
         Returns:
-            out: [B, C, H, W] với spectral dependencies learned
+            Any: Output produced by this function.
         """
         B, C, H, W = x.shape
         
@@ -215,6 +248,16 @@ class SpectralTransformerWithConv(nn.Module):
     """
     
     def __init__(self, num_bands=31, depth=2, num_heads=4):
+        """Initialize the `SpectralTransformerWithConv` instance.
+
+        Args:
+            num_bands: Input parameter `num_bands`.
+            depth: Input parameter `depth`.
+            num_heads: Input parameter `num_heads`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         super().__init__()
         
         # Conv cho spatial features
@@ -232,11 +275,13 @@ class SpectralTransformerWithConv(nn.Module):
         self.conv_after = nn.Conv2d(num_bands, num_bands, 3, 1, 1)
         
     def forward(self, x):
-        """
+        """Run the forward computation for this module.
+
         Args:
-            x: [B, C, H, W]
+            x: Input parameter `x`.
+
         Returns:
-            out: [B, C, H, W]
+            Any: Output produced by this function.
         """
         identity = x
         

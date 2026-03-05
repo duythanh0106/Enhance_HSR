@@ -111,7 +111,7 @@ class SpatialSpectralAttention(nn.Module):
     """
 ```
 
-**Complexity:** O(C² + HW) - efficient!
+**Complexity (theo code hiện tại):** O(C·HW + C²) - efficient hơn nhiều so với spatial self-attention toàn ảnh.
 
 #### 2. Spectral Transformer
 
@@ -160,10 +160,10 @@ class SpectralTransformer(nn.Module):
 ```bash
 # Clone repository
 git clone <your-repo-url>
-cd hyperspectral-sr
+cd Enhance_HSR
 
 # Create virtual environment
-python -m venv venv
+python3 -m venv venv
 source venv/bin/activate  # Linux/Mac
 # hoặc
 venv\Scripts\activate  # Windows
@@ -176,11 +176,11 @@ pip install -r requirements.txt
 
 ```bash
 # Test imports
-python -c "import torch; print(f'PyTorch: {torch.__version__}')"
-python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
+python3 -c "import torch; print(f'PyTorch: {torch.__version__}')"
+python3 -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
 
 # Test model creation
-python models/essa_ssam_spectrans.py
+python3 models/essa_ssam_spectrans.py
 ```
 
 **Expected output:**
@@ -191,6 +191,18 @@ Testing: ESSA-SSAM-SpecTrans (depth=2)
 model_name: ESSA-SSAM-SpecTrans
 total_parameters: 3,245,123
 ✅ All tests completed successfully!
+```
+
+### Smoke Test Commands (nhanh, không train full)
+
+```bash
+# Kiểm tra CLI chạy được
+python3 train.py --help
+python3 test_full_image.py --help
+python3 evaluate.py --help
+
+# Kiểm tra import model
+python3 -c "import models.essa_ssam_spectrans as m; print(hasattr(m, 'ESSA_SSAM_SpecTrans'))"
 ```
 
 ---
@@ -213,11 +225,11 @@ total_parameters: 3,245,123
 
 3. **Chikusei Dataset**
    - 1 large airborne hyperspectral scene
-   - 128 spectral bands (363–1018 nm)
-   - Spatial resolution: 2517×2335 
+   - 128 spectral bands (363-1018 nm)
+   - Spatial resolution: 2517×2335
    - Download: https://naotoyokoya.com/Download.html
-  
-4. **Chikusei Dataset**
+
+4. **PaviaCentre Dataset**
    - 1 airborne hyperspectral scene (urban area)
    - 102 spectral bands
    - Spatial resolution: ~1096×1096
@@ -228,10 +240,10 @@ total_parameters: 3,245,123
 ```
 data/
 ├── CAVE/
-│   ├── balloons_ms.mat
-│   ├── beads_ms.mat
-│   ├── cd_ms.mat
-│   └── ... (32 scenes total)
+│   └── complete_ms_data/
+│       ├── balloons_ms/balloons_ms/balloons_ms_01.png ... balloons_ms_31.png
+│       ├── beads_ms/beads_ms/beads_ms_01.png ... beads_ms_31.png
+│       └── ... (32 scenes total)
 │
 ├── Harvard/
 │   ├── imgd1.mat
@@ -251,43 +263,78 @@ data/
 
 ### Train/Val/Test Splits
 
-**CAVE Dataset (32 scenes):**
-```
-Total: 32 scenes
-├─ Train: 25 scenes (78%) - Fixed
-├─ Val:   3 scenes  (9%)  - Fixed
-└─ Test:  4 scenes  (13%) - Fixed
-```
+Project hỗ trợ split tự động theo từng dataset:
+- `data/splits.py` tạo `split.json` theo tỷ lệ mặc định `train=0.8`, `val=0.1`, `test=0.1` (seed=42)
+- `train.py` dùng trực tiếp split `train` và `val` từ `split.json` (không tách ngẫu nhiên lần 2)
+- `test_full_image.py` và `evaluate.py` dùng split `test`
+- Có thể chỉnh trực tiếp trong `config.py`: `split_seed`, `train_ratio`, `val_ratio`, `test_ratio`, `regenerate_split`
 
-**Splits are FIXED** để đảm bảo reproducibility. Details trong `data/splits.py`.
+**⚠️ Important:** Không dùng dữ liệu `test` để huấn luyện.
 
-**Test set scenes (CAVE):**
-- face_ms
-- feathers_ms
-- flowers_ms
-- oil_painting_ms
+### Trường hợp dataset chỉ có 1 ảnh + Ground Truth (Chikusei, PaviaCentre)
 
-**⚠️ Important:** Test set KHÔNG BAO GIỜ được dùng trong training!
+Với các dataset kiểu này thường có:
+- 1 file hyperspectral cube chính (3D)
+- 1 file ground-truth/label (không phải cube 3D)
+
+Hành vi hiện tại của code:
+- Tự bỏ qua file ground-truth không phải hyperspectral cube khi tạo/đọc split
+- `split.json` thực tế sẽ thành `train=1, val=0, test=0` (vì chỉ có 1 ảnh hợp lệ)
+- Khi train: nếu `val` rỗng, code tự fallback dùng `train` để validate
+- Khi test/evaluate: nếu `test` rỗng, code tự fallback dùng `train` để test
+
+Vì vậy khi thấy warning:
+- `Test split is empty. Falling back to split='train'...`
+
+thì đó là đúng hành vi mong đợi cho dataset 1 ảnh.
 
 ---
 
 ## 🎓 Training
 
-### Quick Start
+### Lệnh chuẩn
 
-**1. Train ESSA-SSAM-SpecTrans (Final Model - Recommended):**
+Nếu chưa activate venv, dùng `./.venv/bin/python` thay cho `python3`.
+
 ```bash
-python train.py --config spectrans --data_root ./data/CAVE
+python3 train.py --config spectrans --data_root <DATA_ROOT>
 ```
 
-**2. Train ESSA-SSAM (without Spectral Transformer):**
+`--config` hỗ trợ: `default`, `baseline`, `proposed`, `spectrans`, `lightweight`, `universal_best`.
+
+Preset khuyên dùng để train ổn trên cả Harvard/CAVE và Chikusei/Pavia:
+
 ```bash
-python train.py --config proposed --data_root ./data/CAVE
+python3 train.py --config universal_best --data_root <DATA_ROOT>
 ```
 
-**3. Train ESSA Baseline:**
+### Train theo từng dataset
+
 ```bash
-python train.py --config baseline --data_root ./data/CAVE
+# CAVE
+python3 train.py --config spectrans --data_root ./data/CAVE
+
+# Harvard
+python3 train.py --config spectrans --data_root ./data/Harvard
+
+# Chikusei
+python3 train.py --config spectrans --data_root ./data/Chikusei
+
+# PaviaCentre
+python3 train.py --config spectrans --data_root ./data/PaviaCentre
+```
+
+### Train các biến thể model
+
+```bash
+# ESSA baseline
+python3 train.py --config baseline --data_root ./data/Harvard
+
+# ESSA + SSAM
+python3 train.py --config proposed --data_root ./data/Harvard
+
+# ESSA + SSAM + SpecTrans (recommended)
+python3 train.py --config spectrans --data_root ./data/Harvard
 ```
 
 ### Training Configs
@@ -317,28 +364,150 @@ learning_rate = 2e-4
 lr_scheduler = 'cosine'
 ```
 
+**ConfigUniversalBest (khuyên dùng đa dataset):**
+```python
+model_name = 'ESSA_SSAM_SpecTrans'
+optimizer = 'adamw'
+weight_decay = 1e-4
+learning_rate = 1e-4
+patch_size = 64
+batch_size = 1
+gradient_clip_norm = 1.0
+use_ema = True
+ema_decay = 0.999
+warmup_epochs = 10
+warmup_start_lr = 1e-6
+use_two_phase_loss = True
+loss_phase1_ratio = 0.4
+loss_phase1_sam_scale = 0.3
+loss_phase1_ssim_scale = 0.25
+best_selection_metric = 'composite'
+use_early_stopping = True
+early_stopping_patience = 40
+early_stopping_min_delta = 1e-4
+early_stopping_start_epoch = 20
+num_epochs = 1000  # profile multi-scene (Harvard/CAVE)
+
+# Tự chuyển profile khi dataset là single-scene (Chikusei/Pavia)
+train_virtual_samples_per_epoch = 2000
+val_virtual_samples_per_epoch = 256
+num_epochs = 100
+early_stopping_patience = 12
+early_stopping_start_epoch = 25
+```
+
+### Hyperparameter Tuning (Optuna)
+
+```bash
+# Cài thêm (nếu chưa có)
+pip install optuna
+
+# Tune cho Harvard/CAVE
+python3 tune_optuna.py --config universal_best --data_root ./data/Harvard --trials 20 --epochs 120
+
+# Tune cho Chikusei/Pavia (single-scene)
+python3 tune_optuna.py --config universal_best --data_root ./data/Chikusei --trials 12 --epochs 80
+```
+
+### Seed Sweep (chọn seed tốt hơn, giữ split cố định)
+
+```bash
+# Quét seed, xếp hạng theo full-image validation (khuyên dùng)
+python3 seed_sweep.py \
+  --config universal_best \
+  --data_root ./data/Harvard \
+  --seeds 7,11,19,23,29 \
+  --split_seed 42 \
+  --epochs 100 \
+  --num_workers 0 \
+  --selection_mode full_image_val \
+  --best_selection_metric psnr
+
+# Nếu muốn sweep nhanh theo patch-val
+python3 seed_sweep.py \
+  --config universal_best \
+  --data_root ./data/Harvard \
+  --seeds 7,11,19 \
+  --epochs 80 \
+  --num_workers 0 \
+  --selection_mode patch_val
+```
+
+Kết quả sweep được lưu tại `seed_sweep_results/<sweep_timestamp>/` gồm:
+- `summary.txt`
+- `seed_sweep_results.csv`
+- `seed_sweep_results.json`
+- `seed_sweep_meta.json`
+
+`summary.txt` sẽ có:
+- thời gian từng seed (`seed_time`)
+- `Total sweep time` cho toàn bộ lượt chạy
+- `Avg time/seed`
+
+#### Hướng dẫn dùng `seed_sweep` (chi tiết)
+
+1. Giữ cố định `--split_seed` để không thay đổi tập train/val/test giữa các seed.
+2. Quét nhanh nhiều seed với `--epochs 100` để tiết kiệm thời gian.
+3. Chọn seed có `rank_score` cao nhất trong `summary.txt`.
+4. Test checkpoint tốt nhất của seed đó bằng `test_full_image.py`.
+
+Ví dụ test sau khi sweep:
+
+```bash
+python3 test_full_image.py \
+  --checkpoint ./checkpoints/ESSA_SSAM_SpecTrans_Harvard_x4_sweep_YYYYMMDD_HHMMSS_seed7/best.pth \
+  --data_root ./data/Harvard \
+  --save_images
+```
+
+Ghi chú:
+- `selection_mode=full_image_val` bám sát protocol test hơn `patch_val`.
+- Nếu thời gian hạn chế, có thể sweep 3 seed trước: `--seeds 7,11,19`.
+
+### Quy trình khi KHÔNG dùng `seed_sweep`
+
+Nếu không muốn sweep seed, dùng quy trình 1-run chuẩn:
+
+```bash
+# 1) Train 1 run
+python3 train.py --config universal_best --data_root ./data/Harvard
+
+# 2) Test full-image
+python3 test_full_image.py \
+  --checkpoint ./checkpoints/<experiment_name>/best.pth \
+  --data_root ./data/Harvard \
+  --save_images
+```
+
+Khuyến nghị tối thiểu để ổn định:
+- chạy 2-3 run độc lập (đổi `seed` trong `config.py`) rồi chọn model tốt nhất theo val/test protocol của bạn.
+
 ### Training Output
 
 ```
 Model: ESSA_SSAM_SpecTrans
-Parameters: 3,245,123
-Train samples: 25, Val samples: 3
+Parameters: 3,114,659
+Train samples: 32, Val samples: 8
 
-Epoch 1/100: 100%|████████| 156/156 [02:34<00:00]
-  Train Loss: 0.0234
-  Val PSNR: 28.45 dB
-  Val SSIM: 0.8912
-  Val SAM: 4.23°
+Epoch 95:
+  Train Loss: 0.0658
+  Val PSNR: 37.20 dB
+  Val SSIM: 0.9013
+  Val SAM: 5.3076°
+  Val ERGAS: 6.4316
+  Train Time: 00:21 (21.34 seconds)
+  Validate Time: 00:02 (2.25 seconds)
+  Epoch Total Time: 00:23 (23.70 seconds)
+
+Epoch 96/100: 100%|████████| 32/32 [00:21<00:00, 1.50it/s, loss=0.0554, l1=0.0088, sam=0.0758]
+Validating: 100%|████████| 8/8 [00:02<00:00, 3.55it/s]
 
 ...
 
-Epoch 100/100:
-  Train Loss: 0.0089
-  Val PSNR: 33.87 dB
-  Val SSIM: 0.9445
-  Val SAM: 2.85°
-
-💾 Best model saved! PSNR: 33.87 dB
+Training Completed!
+Best PSNR: 37.53 dB
+Best Score (COMPOSITE): 0.812345 (epoch 88)
+Total Training Time: 00:38:12 (2292.44 seconds)
 ```
 
 ### Checkpoints
@@ -347,7 +516,7 @@ Checkpoints được lưu tại:
 ```
 checkpoints/
 └── ESSA_SSAM_SpecTrans_CAVE_x4_20240117_143022/
-    ├── best.pth          # Best validation PSNR
+    ├── best.pth          # Best checkpoint theo best_selection_metric
     ├── latest.pth        # Latest checkpoint
     └── epoch_50.pth      # Periodic saves
 ```
@@ -355,7 +524,7 @@ checkpoints/
 ### Resume Training
 
 ```bash
-python train.py --resume ./checkpoints/ESSA_SSAM_SpecTrans_xxx/latest.pth
+python3 train.py --resume ./checkpoints/ESSA_SSAM_SpecTrans_xxx/latest.pth
 ```
 
 ### Training Tips
@@ -370,54 +539,166 @@ feature_dim = 64        # from 128
 
 **Faster Training:**
 ```bash
-# Use lightweight config
-python train.py --config lightweight --data_root ./data/CAVE
+python3 train.py --config lightweight --data_root ./data/CAVE
 ```
 
-**Monitor Training:**
+**Theo dõi log train realtime:**
 ```bash
-# In another terminal
-tail -f logs/ESSA_SSAM_SpecTrans_xxx/training.log
+tail -f logs/<experiment_name>/training.log
 ```
 
 ---
 
 ## 🧪 Testing & Evaluation
 
-### Full-Image Test (Paper-Style)
+### Full-Image Test (khuyên dùng)
 
-**Recommended for final results:**
+Điều kiện trước khi test/evaluate:
+- Có checkpoint `.pth` từ bước train
+- `data_root` chứa dữ liệu HSI hợp lệ (`.mat` hoặc scene-folder dạng `*_ms_XX.png`) và có/được tạo `split.json`
 
 ```bash
-python test_full_image.py \
+# Liệt kê checkpoint có sẵn
+find checkpoints -name best.pth
+```
+
+```bash
+python3 test_full_image.py \
     --checkpoint ./checkpoints/ESSA_SSAM_SpecTrans_xxx/best.pth \
-    --data_root ./data/CAVE \
+    --data_root <DATA_ROOT> \
     --save_images
 ```
 
-**Features:**
-- Test trên full images (no patches)
-- Crop border theo paper style
-- Fixed test set (4 scenes)
-- Reproducible results
+Khi bật `--save_images`, mỗi ảnh test sẽ có thư mục riêng trong `test_results/.../images/<image_name>/` gồm:
+- `<image_name>_SR.npy`
+- `<image_name>_SR_RGB.png`
+- `<image_name>_HR_RGB.png`
+- `<image_name>_LR_RGB.png`
 
+Nếu muốn xuất toàn bộ từng band thành PNG để xem trực tiếp (tương tự kiểu `balloons_ms_XX`), thêm:
+
+```bash
+python3 test_full_image.py \
+    --checkpoint ./checkpoints/ESSA_SSAM_SpecTrans_xxx/best.pth \
+    --data_root <DATA_ROOT> \
+    --save_images \
+    --save_band_png
+```
+
+Ví dụ:
+
+```bash
+python3 test_full_image.py --checkpoint ./checkpoints/ESSA_SSAM_SpecTrans_xxx/best.pth --data_root ./data/MyDataset
+```
+
+Ví dụ cụ thể cho Harvard:
+
+```bash
+python3 test_full_image.py \
+    --checkpoint ./checkpoints/ESSA_SSAM_Harvard_x4_xxx/best.pth \
+    --data_root ./data/Harvard \
+    --save_images
+```
+
+### Ví dụ cho dataset 1 ảnh + GT (Chikusei/PaviaCentre)
+
+Train:
+
+```bash
+# Chikusei
+python3 train.py --config spectrans --data_root ./data/Chikusei
+
+# PaviaCentre
+python3 train.py --config spectrans --data_root ./data/PaviaCentre
+```
+
+Test full-image (khuyên dùng CPU cho ảnh lớn để tránh crash MPS):
+
+```bash
+# Chikusei
+python3 test_full_image.py \
+    --checkpoint ./checkpoints/ESSA_SSAM_SpecTrans_Chikusei_x4_xxx/best.pth \
+    --data_root ./data/Chikusei \
+    --device cpu \
+    --chop_patch_size 32 \
+    --chop_overlap 8 \
+    --save_images
+
+# PaviaCentre
+python3 test_full_image.py \
+    --checkpoint ./checkpoints/ESSA_SSAM_SpecTrans_PaviaCentre_x4_xxx/best.pth \
+    --data_root ./data/PaviaCentre \
+    --device cpu \
+    --chop_patch_size 32 \
+    --chop_overlap 8 \
+    --save_images
+```
+
+Ý nghĩa 2 tham số inference:
+- `--chop_patch_size`: patch LR nhỏ hơn sẽ an toàn bộ nhớ hơn nhưng chậm hơn
+- `--chop_overlap`: overlap lớn hơn giúp giảm seam giữa patch nhưng chậm hơn
+
+Ví dụ output mới (có time từng ảnh + time tổng):
+
+```
+imgf3.mat:
+  PSNR: 32.12 dB, SSIM: 0.8660, SAM: 7.028°, ERGAS: 7.247
+  Time: 01:21:00 (4860.39 seconds)
+
+...
+
+📊 FULL-IMAGE TEST RESULTS (Paper-style)
+Number of test images: 5
+Average Metrics:
+  PSNR  : 34.45 dB
+  SSIM  : 0.8952
+  SAM   : 4.230°
+  ERGAS : 4.755
+  Inference Total Time : 03:40:35 (13235.89 seconds)
+  Avg Time / Image     : 44:07 (2647.18 seconds)
+  Total Runtime        : 03:41:10 (13270.44 seconds)
+```
+
+Nếu gặp lỗi `ValueError: No supported hyperspectral samples found in ...`, nguyên nhân thường là sai đường dẫn hoặc sai cấu trúc dataset.
+Hãy dùng `--data_root ./data/Harvard` (không phải `./Harvard`).
+
+Dataset label được tự suy ra từ tên folder `data_root` (ví dụ `./data/Harvard` -> `Harvard`).
+
+**Checkpoint compatibility note:**
+- Code hiện hỗ trợ tự động convert một số weight Spectral Transformer cũ khi load checkpoint
+  (ví dụ `Linear` weight 2D sang `Conv1d(1x1)` weight 3D cho `qkv/proj`).
+- Khi convert diễn ra, CLI sẽ in thông báo kiểu: `Converted N legacy weight tensors for compatibility.`
+
+**Performance note (vì sao test có thể nhanh hơn nhiều):**
+- Tiền xử lý downsample trong dataset đã được vectorize (thay cho loop pixel/band).
+- Spectral Transformer attention hiện chạy theo hướng `O(C^2 * HW)` thay vì kiểu spatial-token rất nặng trước đó.
+- Vì vậy thời gian test có thể giảm mạnh giữa các phiên bản code; hãy so sánh thời gian trên cùng commit để công bằng.
 
 ### Comprehensive Evaluation
 
 ```bash
-python evaluate.py \
+python3 evaluate.py \
     --checkpoint ./checkpoints/ESSA_SSAM_SpecTrans_xxx/best.pth \
-    --data_root ./data/CAVE \
+    --data_root ./data/MyDataset \
+    --save_images
+```
+
+Ví dụ cụ thể cho Harvard:
+
+```bash
+python3 evaluate.py \
+    --checkpoint ./checkpoints/ESSA_SSAM_Harvard_x4_xxx/best.pth \
+    --data_root ./data/Harvard \
     --save_images
 ```
 
 ### Model Comparison
 
 ```bash
-python evaluate.py \
+python3 evaluate.py \
     --checkpoint ./checkpoints/ESSA_SSAM_SpecTrans_xxx/best.pth \
     --compare ./checkpoints/ESSA_SSAM_xxx/best.pth \
-    --data_root ./data/CAVE
+    --data_root ./data/MyDataset
 ```
 
 ### Metrics Explained
@@ -467,36 +748,72 @@ Reconstructed images được save tại `test_results/` hoặc `inference_resul
 ## 📁 Cấu Trúc Project
 
 ```
-hyperspectral-sr/
+Enhance_HSR/
+├── README.md
+├── .gitignore
+├── requirements.txt
+├── config.py                              # Config classes + dataset/split settings
+├── train.py                               # Training entrypoint
+├── evaluate.py                            # Evaluation script (results/)
+├── test_full_image.py                     # Full-image test script (test_results/)
 │
-├── models/                              # Model architectures
+├── models/
 │   ├── __init__.py
-│   ├── essa_original.py                 # ESSA baseline
-│   ├── essa_improved.py                 # ESSA + SSAM
-│   ├── essa_ssam_spectrans.py          # ESSA + SSAM + SpecTrans ⭐
-│   ├── spatial_spectral_attention.py   # SSAM module
-│   └── spectral_transformer.py         # Spectral Transformer module
+│   ├── factory.py                         # Unified model builder + ckpt compatibility loader
+│   ├── essa_original.py                   # ESSA baseline
+│   ├── essa_improved.py                   # ESSA + SSAM
+│   ├── essa_ssam_spectrans.py             # ESSA + SSAM + Spectral Transformer
+│   ├── spatial_spectral_attention.py      # SSAM module
+│   └── spectral_transformer.py            # Spectral Transformer blocks
 │
-├── data/                                # Dataset handling
+├── data/
 │   ├── __init__.py
-│   ├── dataset.py                      # Dataset classes
-│   └── splits.py                       # Train/val/test splits
+│   ├── dataset.py                         # Train/test datasets + auto band detect
+│   ├── splits.py                          # split.json generation/loading
+│   ├── CAVE/
+│   │   ├── complete_ms_data/
+│   │   └── split.json
+│   ├── Harvard/
+│   │   ├── *.mat
+│   │   ├── split.json
+│   │   └── README.txt, calib.txt
+│   ├── Chikusei/
+│   │   ├── HyperspecVNIR_Chikusei_20140729.mat
+│   │   ├── HyperspecVNIR_Chikusei_20140729_Ground_Truth.mat
+│   │   └── split.json
+│   └── PaviaCentre/
+│       ├── Pavia.mat
+│       └── Pavia_gt.mat
 │
-├── utils/                               # Utilities (if needed)
-│   └── __init__.py
+├── utils/
+│   ├── __init__.py
+│   ├── device.py                          # auto device: cuda/mps/cpu
+│   ├── losses.py
+│   ├── metrics.py
+│   └── visualization.py
 │
-├── config.py                           # Configuration classes
-├── train.py                            # Training script
-├── evaluate.py                         # Evaluation script
-├── test_full_image.py                  # Full-image test (paper-style)
-├── requirements.txt                    # Python dependencies
-│
-├── checkpoints/                        # Saved models (created during training)
-├── logs/                               # Training logs (created during training)
-├── test_results/                       # Test results (created during testing)
-│
-└── README.md                           # This file
+├── checkpoints/                           # Saved checkpoints by experiment
+│   └── <experiment_name>/
+│       ├── best.pth
+│       ├── latest.pth
+│       └── epoch_*.pth
+├── logs/                                  # Training logs by experiment
+│   └── <experiment_name>/training.log
+├── results/                               # evaluate.py outputs
+│   └── <experiment_name>/
+│       ├── evaluation_results.json
+│       ├── summary.txt
+│       └── *_SR.npy / *_SR_RGB.png
+└── test_results/                          # test_full_image.py outputs
+    └── test_<timestamp>/
+        ├── test_results.json
+        ├── summary.txt
+        └── images/
 ```
+
+Ghi chú:
+- Không liệt kê các thư mục môi trường cục bộ như `.venv/`, `venv/`, `__pycache__/`, `.git/`.
+- Một số thư mục output có thể rỗng nếu run bị dừng giữa chừng và sẽ được script cleanup khi có thể.
 
 ---
 
@@ -507,7 +824,7 @@ hyperspectral-sr/
 **Innovation:**
 - Tách biệt spatial và spectral processing
 - 3 fusion strategies (sequential, parallel, adaptive)
-- Efficient O(C² + HW) complexity
+- Efficient O(C·HW + C²) complexity
 
 **vs Traditional Attention:**
 - Traditional: Channel-wise attention chung chung
@@ -571,19 +888,24 @@ feature_dim = 64
 # Check dataset structure
 ls -R data/CAVE/
 
-# Should see .mat files
-# If not, download CAVE dataset first
+# Should see complete_ms_data/*/*_ms_XX.png (or .mat files for other datasets)
+# If not, download/unzip CAVE dataset correctly
 ```
 
 **3. Slow Training**
 
 ```bash
 # Use lightweight config
-python train.py --config lightweight
+python3 train.py --config lightweight --data_root ./data/CAVE
 
 # Or reduce workers
 # In config.py: num_workers = 0
 ```
+
+**4. Có nhiều folder rỗng trong checkpoints/logs/results/test_results**
+
+- Scripts hiện đã tạo thư mục theo kiểu lazy (khi chuẩn bị ghi file).
+- Nếu run bị `Ctrl+C` hoặc lỗi giữa chừng, script sẽ tự cleanup folder rỗng.
 
 **5. Model Not Converging**
 
@@ -629,17 +951,17 @@ learning_rate = 1e-4  # Reduce if loss explodes
 
 ```bash
 # 1. Train all 3 models
-python train.py --config baseline       # ESSA
-python train.py --config proposed       # ESSA-SSAM
-python train.py --config spectrans      # ESSA-SSAM-SpecTrans
+python3 train.py --config baseline  --data_root ./data/CAVE
+python3 train.py --config proposed  --data_root ./data/CAVE
+python3 train.py --config spectrans --data_root ./data/CAVE
 
 # 2. Test all models
-python test_full_image.py --checkpoint checkpoints/ESSA_xxx/best.pth --data_root ./data/CAVE
-python test_full_image.py --checkpoint checkpoints/ESSA_SSAM_xxx/best.pth --data_root ./data/CAVE
-python test_full_image.py --checkpoint checkpoints/ESSA_SSAM_SpecTrans_xxx/best.pth --data_root ./data/CAVE
+python3 test_full_image.py --checkpoint checkpoints/ESSA_xxx/best.pth --data_root ./data/MyDataset
+python3 test_full_image.py --checkpoint checkpoints/ESSA_SSAM_xxx/best.pth --data_root ./data/MyDataset
+python3 test_full_image.py --checkpoint checkpoints/ESSA_SSAM_SpecTrans_xxx/best.pth --data_root ./data/MyDataset
 
 # 3. Compare results
-python evaluate.py --checkpoint spectrans.pth --compare ssam.pth --data_root ./data/CAVE
+python3 evaluate.py --checkpoint spectrans.pth --compare ssam.pth --data_root ./data/MyDataset
 
 # 4. Create tables for thesis (manually from results)
 ```
@@ -648,15 +970,15 @@ python evaluate.py --checkpoint spectrans.pth --compare ssam.pth --data_root ./d
 
 **Train:**
 ```bash
-python train.py --config spectrans --data_root ./data/CAVE
+python3 train.py --config spectrans --data_root ./data/CAVE
 ```
 
 **Test:**
 ```bash
-python test_full_image.py --checkpoint best.pth --data_root ./data/CAVE
+python3 test_full_image.py --checkpoint best.pth --data_root ./data/MyDataset
 ```
 
 **Compare:**
 ```bash
-python evaluate.py --checkpoint model1.pth --compare model2.pth
+python3 evaluate.py --checkpoint model1.pth --compare model2.pth --data_root ./data/MyDataset
 ```

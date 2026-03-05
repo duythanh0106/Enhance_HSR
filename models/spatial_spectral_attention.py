@@ -16,6 +16,15 @@ class SpectralAttention(nn.Module):
     """
     
     def __init__(self, num_channels, reduction=4):
+        """Initialize the `SpectralAttention` instance.
+
+        Args:
+            num_channels: Input parameter `num_channels`.
+            reduction: Input parameter `reduction`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         super(SpectralAttention, self).__init__()
         
         # Global pooling để tổng hợp thông tin spatial
@@ -32,11 +41,13 @@ class SpectralAttention(nn.Module):
         self.sigmoid = nn.Sigmoid()
     
     def forward(self, x):
-        """
+        """Run the forward computation for this module.
+
         Args:
-            x: [B, C, H, W]
+            x: Input parameter `x`.
+
         Returns:
-            out: [B, C, H, W] với spectral attention applied
+            Any: Output produced by this function.
         """
         # Global pooling theo spatial dimensions
         avg_out = self.mlp(self.avg_pool(x))  # [B, C, 1, 1]
@@ -59,6 +70,14 @@ class SpatialAttention(nn.Module):
     """
     
     def __init__(self, kernel_size=7):
+        """Initialize the `SpatialAttention` instance.
+
+        Args:
+            kernel_size: Input parameter `kernel_size`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         super(SpatialAttention, self).__init__()
         
         assert kernel_size in (3, 7), 'kernel size must be 3 or 7'
@@ -69,11 +88,13 @@ class SpatialAttention(nn.Module):
         self.sigmoid = nn.Sigmoid()
     
     def forward(self, x):
-        """
+        """Run the forward computation for this module.
+
         Args:
-            x: [B, C, H, W]
+            x: Input parameter `x`.
+
         Returns:
-            out: [B, C, H, W] với spatial attention applied
+            Any: Output produced by this function.
         """
         # Channel-wise pooling
         avg_out = torch.mean(x, dim=1, keepdim=True)  # [B, 1, H, W]
@@ -100,15 +121,16 @@ class SpatialSpectralAttention(nn.Module):
     """
     
     def __init__(self, num_channels, reduction=4, kernel_size=7, fusion_mode='sequential'):
-        """
+        """Initialize the `SpatialSpectralAttention` instance.
+
         Args:
-            num_channels: Số channels (31 cho hyperspectral)
-            reduction: Reduction ratio cho spectral attention
-            kernel_size: Kernel size cho spatial attention (3 hoặc 7)
-            fusion_mode: Cách kết hợp 2 attention branches
-                - 'sequential': Spectral -> Spatial (mặc định)
-                - 'parallel': Parallel fusion
-                - 'adaptive': Learnable fusion weights
+            num_channels: Input parameter `num_channels`.
+            reduction: Input parameter `reduction`.
+            kernel_size: Input parameter `kernel_size`.
+            fusion_mode: Input parameter `fusion_mode`.
+
+        Returns:
+            None: This method initializes state and returns no value.
         """
         super(SpatialSpectralAttention, self).__init__()
         
@@ -126,11 +148,13 @@ class SpatialSpectralAttention(nn.Module):
             self.beta = nn.Parameter(torch.ones(1))
     
     def forward(self, x):
-        """
+        """Run the forward computation for this module.
+
         Args:
-            x: [B, C, H, W]
+            x: Input parameter `x`.
+
         Returns:
-            out: [B, C, H, W] với spatial-spectral attention applied
+            Any: Output produced by this function.
         """
         if self.fusion_mode == 'sequential':
             # Sequential: Spectral first, then Spatial
@@ -165,6 +189,17 @@ class SSAMBlock(nn.Module):
     """
     
     def __init__(self, num_channels, reduction=4, kernel_size=7, fusion_mode='sequential'):
+        """Initialize the `SSAMBlock` instance.
+
+        Args:
+            num_channels: Input parameter `num_channels`.
+            reduction: Input parameter `reduction`.
+            kernel_size: Input parameter `kernel_size`.
+            fusion_mode: Input parameter `fusion_mode`.
+
+        Returns:
+            None: This method initializes state and returns no value.
+        """
         super(SSAMBlock, self).__init__()
         
         # Pre-processing convolution
@@ -186,11 +221,13 @@ class SSAMBlock(nn.Module):
         self.norm = nn.LayerNorm(num_channels)
     
     def forward(self, x):
-        """
+        """Run the forward computation for this module.
+
         Args:
-            x: [B, C, H, W]
+            x: Input parameter `x`.
+
         Returns:
-            out: [B, C, H, W]
+            Any: Output produced by this function.
         """
         identity = x
         

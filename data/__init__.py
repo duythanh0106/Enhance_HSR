@@ -3,12 +3,12 @@ Data package
 """
 
 from .dataset import HyperspectralDataset, HyperspectralTestDataset
-from .splits import get_split, filter_files_by_split, get_split_info
+from .splits import generate_split, load_split, get_split
 
 __all__ = [
     'HyperspectralDataset',
     'HyperspectralTestDataset',
+    'generate_split',
+    'load_split',
     'get_split',
-    'filter_files_by_split',
-    'get_split_info'
 ]

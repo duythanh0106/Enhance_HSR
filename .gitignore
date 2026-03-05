@@ -1,8 +1,12 @@
 venv/
+.venv/
 __pycache__/
 checkpoints/
+logs/
 dataset/
 test_results/
+.DS_Store
+**/.DS_Store
 *.mat
 *.pth
 *.png
