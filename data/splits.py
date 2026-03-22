@@ -186,16 +186,51 @@ def is_hyperspectral_path(path):
 
 
 def _scan_hyperspectral_paths(data_root):
-    """Scan dataset root and return supported hyperspectral sample paths."""
+    """Scan dataset root and return supported hyperspectral sample paths.
+
+    Scene detection strategy:
+      1. .mat files directly in data_root
+      2. Subdirectories of data_root that contain band images (*_ms_*.png etc.)
+         — checked at ONE level of depth only to avoid duplicate paths when
+           a scene folder contains a same-named subfolder (e.g. CAVE layout:
+           data_root/flowers_ms/flowers_ms/*.png).
+
+    The one-level restriction means: if data_root/flowers_ms/ itself has band
+    images → it is the scene. If it does NOT but data_root/flowers_ms/flowers_ms/
+    does → the inner folder is the scene. Never both.
+    """
     mat_files = sorted(glob.glob(os.path.join(data_root, "*.mat")))
     scene_dirs = []
 
-    # Recursively find scene folders that directly contain spectral bands.
-    for root, dirs, _ in os.walk(data_root):
-        # Skip hidden/system folders.
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
-        if is_hyperspectral_scene_dir(root):
-            scene_dirs.append(root)
+    # Only look one level deep: direct children of data_root
+    try:
+        top_entries = sorted(os.listdir(data_root))
+    except OSError:
+        return mat_files, scene_dirs
+
+    for entry in top_entries:
+        if entry.startswith('.'):
+            continue
+        entry_path = os.path.join(data_root, entry)
+        if not os.path.isdir(entry_path):
+            continue
+
+        if is_hyperspectral_scene_dir(entry_path):
+            # The top-level folder itself contains band images → use it
+            scene_dirs.append(entry_path)
+        else:
+            # Check one level deeper (handles CAVE layout: scene/scene/*.png)
+            try:
+                sub_entries = sorted(os.listdir(entry_path))
+            except OSError:
+                continue
+            for sub in sub_entries:
+                if sub.startswith('.'):
+                    continue
+                sub_path = os.path.join(entry_path, sub)
+                if os.path.isdir(sub_path) and is_hyperspectral_scene_dir(sub_path):
+                    scene_dirs.append(sub_path)
+                    break  # Chỉ lấy 1 scene per top-level folder
 
     return mat_files, sorted(set(scene_dirs))
 

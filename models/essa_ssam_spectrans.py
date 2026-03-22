@@ -47,210 +47,137 @@ class PatchEmbed(nn.Module):
 
 
 class PatchUnEmbed(nn.Module):
-    """Chuyển từ patch embedding về image space"""
-    def __init__(self, embed_dim=96):
-        """Initialize the `PatchUnEmbed` instance.
+    """Reshape từ sequence [B, HW, C] về image space [B, C, H, W]."""
 
-        Args:
-            embed_dim: Input parameter `embed_dim`.
-
-        Returns:
-            None: This method initializes state and returns no value.
-        """
+    def __init__(self):
         super().__init__()
-        self.embed_dim = embed_dim
 
     def forward(self, x, x_size):
         """Run the forward computation for this module.
 
         Args:
-            x: Input parameter `x`.
-            x_size: Input parameter `x_size`.
+            x: Tensor [B, HW, C].
+            x_size: Tuple (H, W) of the spatial dimensions to restore.
 
         Returns:
-            Any: Output produced by this function.
+            Tensor [B, C, H, W].
         """
         B, HW, C = x.shape
-        x = x.transpose(1, 2).view(B, self.embed_dim, x_size[0], x_size[1])
+        # Use C from the tensor — do NOT use a stored embed_dim, which breaks
+        # when the channel count differs from the value set at __init__ time.
+        x = x.transpose(1, 2).view(B, C, x_size[0], x_size[1])
         return x
 
 
-class ConvdownSpecTrans(nn.Module):
+def _make_num_heads(dim):
+    """Chọn num_heads tối ưu cho SpectralTransformer.
+
+    Ưu tiên head_dim trong khoảng [16, 64] — sweet spot cho attention quality.
+    Fallback về heads lớn nhất chia hết dim nếu không có lựa chọn tốt hơn.
     """
-    Convdown block với SSAM + Spectral Transformer
-    
-    Flow: Input → SSAM → Spectral Transformer → Conv → Output
+    # Ưu tiên: head_dim trong [16, 64]
+    for h in (8, 4, 2, 1):
+        if dim % h == 0 and 16 <= dim // h <= 64:
+            return h
+    # Fallback: heads lớn nhất chia hết
+    for h in (8, 4, 2, 1):
+        if dim % h == 0:
+            return h
+    return 1
+
+
+class _ConvBlockSpecTrans(nn.Module):
+    """Base block: LayerNorm → SSAM → SpecTrans → Conv(2x→1x) + skip connection.
+
+    Subclasses chỉ khác tên attribute của conv sequential (để backward-compat
+    với checkpoints cũ). Override `_conv_attr` để đặt tên.
     """
-    def __init__(self, dim, fusion_mode='sequential', use_spectrans=True, spectrans_depth=2):
-        """Initialize the `ConvdownSpecTrans` instance.
+
+    _conv_attr = 'conv'  # tên attribute lưu nn.Sequential
+
+    def __init__(self, dim, fusion_mode='sequential', use_spectrans=True,
+                 spectrans_depth=2, dropout=0.05):
+        """Khởi tạo block.
 
         Args:
-            dim: Input parameter `dim`.
-            fusion_mode: Input parameter `fusion_mode`.
-            use_spectrans: Input parameter `use_spectrans`.
-            spectrans_depth: Input parameter `spectrans_depth`.
-
-        Returns:
-            None: This method initializes state and returns no value.
+            dim: Số channels đầu vào / đầu ra.
+            fusion_mode: Chiến lược fusion SSAM ('sequential', 'parallel', 'adaptive').
+            use_spectrans: Có dùng SpectralTransformer hay không.
+            spectrans_depth: Số block trong SpectralTransformer.
+            dropout: Dropout rate trong conv sequential (mặc định 0.05 thay vì 0.2
+                     — rate 0.2 quá cao cho SR task và làm giảm PSNR).
         """
         super().__init__()
-        
+
         self.use_spectrans = use_spectrans
         self.patch_embed = PatchEmbed()
-        self.patch_unembed = PatchUnEmbed(embed_dim=dim)
-        
-        # Convolution layers
-        self.convd = nn.Sequential(
-            nn.Conv2d(dim * 2, dim * 2, 1, 1, 0), 
+        self.patch_unembed = PatchUnEmbed()
+
+        # Conv sequential: [dim*2 → dim*2 → dim]
+        setattr(self, self._conv_attr, nn.Sequential(
+            nn.Conv2d(dim * 2, dim * 2, 1, 1, 0),
             nn.LeakyReLU(negative_slope=0.2, inplace=True),
-            nn.Dropout2d(0.2),
+            nn.Dropout2d(dropout),
             nn.Conv2d(dim * 2, dim * 2, 3, 1, 1),
             nn.LeakyReLU(negative_slope=0.2, inplace=True),
-            nn.Dropout2d(0.2),
-            nn.Conv2d(dim * 2, dim, 1, 1, 0)
-        )
+            nn.Dropout2d(dropout),
+            nn.Conv2d(dim * 2, dim, 1, 1, 0),
+        ))
 
-        # SSAM module
+        # SSAM — residual handled here, not inside the module
         self.ssam = SpatialSpectralAttention(
             num_channels=dim,
             reduction=4,
             kernel_size=7,
-            fusion_mode=fusion_mode
+            fusion_mode=fusion_mode,
+            use_residual=True,  # standalone use: keep internal residual
         )
-        
-        # Spectral Transformer ⭐ NEW
+
         if use_spectrans:
             self.spectral_transformer = SpectralTransformer(
                 num_bands=dim,
                 depth=spectrans_depth,
-                num_heads=1 if dim < 8 else 4
+                num_heads=_make_num_heads(dim),
             )
-        
+
         self.norm = nn.LayerNorm(dim)
-        self.drop = nn.Dropout2d(0.2)
+        self.drop = nn.Dropout2d(dropout)
 
     def forward(self, x):
-        """Run the forward computation for this module.
-
-        Args:
-            x: Input parameter `x`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Forward pass: norm → SSAM → SpecTrans → conv + skip."""
         shortcut = x
         x_size = (x.shape[2], x.shape[3])
-        
-        # Patch embedding -> SSAM attention -> Patch unembed
-        x_embed = self.patch_embed(x)
-        x_embed = self.norm(x_embed)
-        
-        # Convert back to image for SSAM
-        x_img = self.patch_unembed(x_embed, x_size)
-        x_img = self.ssam(x_img)
-        
-        # Spectral Transformer ⭐
+
+        # Normalize in sequence space, then restore to image space for SSAM
+        x_embed = self.norm(self.patch_embed(x))
+        x_img = self.ssam(self.patch_unembed(x_embed, x_size))
+
         if self.use_spectrans:
             x_img = self.spectral_transformer(x_img)
-        
-        # Back to embedding
-        x_embed = self.patch_embed(x_img)
-        x = self.drop(self.patch_unembed(x_embed, x_size))
-        
-        # Concatenate with shortcut and process
-        x = torch.cat((x, shortcut), dim=1)
-        x = self.convd(x)
-        x = x + shortcut
-        
-        return x
+
+        # Light dropout before skip-cat
+        x_out = self.drop(self.patch_unembed(self.patch_embed(x_img), x_size))
+
+        # Skip-concat then project back to dim channels
+        x_out = torch.cat((x_out, shortcut), dim=1)
+        x_out = getattr(self, self._conv_attr)(x_out)
+        return x_out + shortcut
 
 
-class ConvupSpecTrans(nn.Module):
+class ConvdownSpecTrans(_ConvBlockSpecTrans):
+    """Convdown block: SSAM + Spectral Transformer + Conv.
+
+    Tên attribute conv là 'convd' để tương thích với checkpoints cũ.
     """
-    Convup block với SSAM + Spectral Transformer
+    _conv_attr = 'convd'
+
+
+class ConvupSpecTrans(_ConvBlockSpecTrans):
+    """Convup block: SSAM + Spectral Transformer + Conv.
+
+    Tên attribute conv là 'convu' để tương thích với checkpoints cũ.
     """
-    def __init__(self, dim, fusion_mode='sequential', use_spectrans=True, spectrans_depth=2):
-        """Initialize the `ConvupSpecTrans` instance.
-
-        Args:
-            dim: Input parameter `dim`.
-            fusion_mode: Input parameter `fusion_mode`.
-            use_spectrans: Input parameter `use_spectrans`.
-            spectrans_depth: Input parameter `spectrans_depth`.
-
-        Returns:
-            None: This method initializes state and returns no value.
-        """
-        super().__init__()
-        
-        self.use_spectrans = use_spectrans
-        self.patch_embed = PatchEmbed()
-        self.patch_unembed = PatchUnEmbed(embed_dim=dim)
-        
-        # Convolution layers
-        self.convu = nn.Sequential(
-            nn.Conv2d(dim * 2, dim * 2, 1, 1, 0), 
-            nn.LeakyReLU(negative_slope=0.2, inplace=True),
-            nn.Dropout2d(0.2),
-            nn.Conv2d(dim * 2, dim * 2, 3, 1, 1),
-            nn.LeakyReLU(negative_slope=0.2, inplace=True),
-            nn.Dropout2d(0.2),
-            nn.Conv2d(dim * 2, dim, 1, 1, 0)
-        )
-        
-        # SSAM module
-        self.ssam = SpatialSpectralAttention(
-            num_channels=dim,
-            reduction=4,
-            kernel_size=7,
-            fusion_mode=fusion_mode
-        )
-        
-        # Spectral Transformer ⭐ NEW
-        if use_spectrans:
-            self.spectral_transformer = SpectralTransformer(
-                num_bands=dim,
-                depth=spectrans_depth,
-                num_heads=1 if dim < 8 else 4
-            )
-        
-        self.drop = nn.Dropout2d(0.2)
-        self.norm = nn.LayerNorm(dim)
-
-    def forward(self, x):
-        """Run the forward computation for this module.
-
-        Args:
-            x: Input parameter `x`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
-        shortcut = x
-        x_size = (x.shape[2], x.shape[3])
-        
-        # Patch embedding -> SSAM attention
-        x_embed = self.patch_embed(x)
-        x_embed = self.norm(x_embed)
-        
-        # Convert to image for SSAM
-        x_img = self.patch_unembed(x_embed, x_size)
-        x_img = self.ssam(x_img)
-        
-        # Spectral Transformer ⭐
-        if self.use_spectrans:
-            x_img = self.spectral_transformer(x_img)
-        
-        # Back to embedding
-        x_embed = self.patch_embed(x_img)
-        x = self.drop(self.patch_unembed(x_embed, x_size))
-        
-        # Concatenate with shortcut and process
-        x = torch.cat((x, shortcut), dim=1)
-        x = self.convu(x)
-        x = x + shortcut
-        
-        return x
+    _conv_attr = 'convu'
 
 
 class Downsample(nn.Sequential):

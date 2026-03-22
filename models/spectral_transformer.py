@@ -68,7 +68,8 @@ class SpectralMultiHeadAttention(nn.Module):
         v = v.reshape(B, self.num_heads, self.head_dim, N)
 
         # Attention over spectral dimension per head: [B, heads, head_dim, head_dim].
-        scale = 1.0 / math.sqrt(max(N, 1))
+        # Scale by head_dim (the key dimension), not N (spatial tokens).
+        scale = 1.0 / math.sqrt(self.head_dim)
         attn = torch.matmul(q, k.transpose(-2, -1)) * scale
         attn = attn.softmax(dim=-1)
         attn = self.dropout(attn)

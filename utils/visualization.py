@@ -205,63 +205,80 @@ def plot_attention_maps(attention_maps, save_path=None):
 
 
 def plot_training_curves(train_losses, val_metrics, save_path=None):
-    """Execute `plot_training_curves`.
+    """Plot training loss and validation metrics with correct epoch x-axis.
 
     Args:
-        train_losses: Input parameter `train_losses`.
-        val_metrics: Input parameter `val_metrics`.
-        save_path: Input parameter `save_path`.
+        train_losses: List of per-epoch training loss values.
+        val_metrics:  List of dicts with keys 'epoch', 'PSNR', 'SSIM', 'SAM'.
+                      The 'epoch' field is used as the x-axis so validation
+                      curves align with the training loss plot even when
+                      validate_every > 1.
+        save_path:    PNG output path. Shows interactively if None.
 
     Returns:
-        None: This function returns no value.
+        None
     """
-    epochs = range(1, len(train_losses) + 1)
-    val_epochs = range(1, len(val_metrics) + 1)
-    
-    # Extract metrics
-    val_psnr = [m['PSNR'] for m in val_metrics]
-    val_ssim = [m['SSIM'] for m in val_metrics]
-    val_sam = [m['SAM'] for m in val_metrics]
-    
-    # Plot
+    # Training x-axis: actual epoch numbers (1-indexed)
+    train_epochs = list(range(1, len(train_losses) + 1))
+
+    # Validation x-axis: use the real epoch number stored in each entry
+    # Falls back to sequential index if 'epoch' key is missing (old logs)
+    val_epochs = [m.get('epoch', (i + 1)) for i, m in enumerate(val_metrics)]
+
+    # Extract val series — only plot metrics present in the data
+    val_psnr = [(e, m['PSNR']) for e, m in zip(val_epochs, val_metrics) if 'PSNR' in m]
+    val_ssim = [(e, m['SSIM']) for e, m in zip(val_epochs, val_metrics) if 'SSIM' in m]
+    val_sam  = [(e, m['SAM'])  for e, m in zip(val_epochs, val_metrics) if 'SAM'  in m]
+
     fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-    
-    # Training loss
-    axes[0, 0].plot(epochs, train_losses, 'b-', linewidth=2)
+
+    # ── Training loss ──────────────────────────────────────────────────
+    axes[0, 0].plot(train_epochs, train_losses, 'b-', linewidth=1.2)
     axes[0, 0].set_xlabel('Epoch', fontsize=12)
     axes[0, 0].set_ylabel('Loss', fontsize=12)
     axes[0, 0].set_title('Training Loss', fontsize=14)
+    axes[0, 0].set_xlim(1, max(train_epochs))
     axes[0, 0].grid(True, alpha=0.3)
-    
-    # Validation PSNR
-    axes[0, 1].plot(val_epochs, val_psnr, 'g-', linewidth=2, marker='o')
+
+    # ── Validation PSNR ───────────────────────────────────────────────
+    if val_psnr:
+        xe, ye = zip(*val_psnr)
+        axes[0, 1].plot(xe, ye, 'g-', linewidth=1.5, marker='o', markersize=4)
+        axes[0, 1].set_xlim(1, max(train_epochs))
     axes[0, 1].set_xlabel('Epoch', fontsize=12)
     axes[0, 1].set_ylabel('PSNR (dB)', fontsize=12)
     axes[0, 1].set_title('Validation PSNR', fontsize=14)
     axes[0, 1].grid(True, alpha=0.3)
-    
-    # Validation SSIM
-    axes[1, 0].plot(val_epochs, val_ssim, 'r-', linewidth=2, marker='s')
+
+    # ── Validation SSIM ───────────────────────────────────────────────
+    if val_ssim:
+        xe, ye = zip(*val_ssim)
+        axes[1, 0].plot(xe, ye, 'r-', linewidth=1.5, marker='s', markersize=4)
+        axes[1, 0].set_xlim(1, max(train_epochs))
     axes[1, 0].set_xlabel('Epoch', fontsize=12)
     axes[1, 0].set_ylabel('SSIM', fontsize=12)
     axes[1, 0].set_title('Validation SSIM', fontsize=14)
     axes[1, 0].grid(True, alpha=0.3)
-    
-    # Validation SAM
-    axes[1, 1].plot(val_epochs, val_sam, 'orange', linewidth=2, marker='^')
+
+    # ── Validation SAM ────────────────────────────────────────────────
+    if val_sam:
+        xe, ye = zip(*val_sam)
+        axes[1, 1].plot(xe, ye, color='orange', linewidth=1.5,
+                        marker='^', markersize=4)
+        axes[1, 1].set_xlim(1, max(train_epochs))
     axes[1, 1].set_xlabel('Epoch', fontsize=12)
     axes[1, 1].set_ylabel('SAM (degrees)', fontsize=12)
     axes[1, 1].set_title('Validation SAM', fontsize=14)
     axes[1, 1].grid(True, alpha=0.3)
-    
+
     plt.tight_layout()
-    
+
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         print(f"Saved training curves to {save_path}")
     else:
         plt.show()
-    
+
     plt.close()
 
 

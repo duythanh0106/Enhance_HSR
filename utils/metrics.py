@@ -153,9 +153,10 @@ def calculate_ergas(img1, img2, scale=4):
         # Calculate mean of reference band
         mean_ref = torch.mean(ref_band)
         
-        # Relative squared error
-        if mean_ref > 0:
-            sum_squared_relative_error += mse / (mean_ref ** 2)
+        # Relative squared error — dùng eps để tránh div/0 và skip band
+        # Hard skip (mean_ref<=0) gây bias vì bỏ qua band đó khỏi average
+        eps_ref = 1e-8
+        sum_squared_relative_error += mse / (mean_ref ** 2 + eps_ref)
     
     # Calculate ERGAS
     ergas = 100.0 / scale * math.sqrt(sum_squared_relative_error / C)

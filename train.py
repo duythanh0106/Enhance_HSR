@@ -5,6 +5,7 @@ Run: python train.py --config proposed
 
 import os
 import argparse
+import random
 import time
 import torch
 import torch.optim as optim
@@ -139,7 +140,10 @@ class Trainer:
         self.log_file = None
         self._device_runtime_logged = False
 
-    
+        # Open log file early — ALL _log() calls (build, dataloader, model) are recorded.
+        # train() calls _open_log_file() again but it is a no-op if already open.
+        self._open_log_file()
+
         # Set random seed
         self.set_seed(config.seed)
         
@@ -185,11 +189,12 @@ class Trainer:
             None: This function returns no value.
         """
         torch.manual_seed(seed)
-        
+
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
 
         np.random.seed(seed)
+        random.seed(seed)  # seed Python built-in random (dùng bởi nhiều augmentation lib)
 
     def _set_learning_rate(self, lr):
         """Internal helper for `set_learning_rate` operations.
@@ -261,19 +266,25 @@ class Trainer:
             os.rmdir(path)
 
     def cleanup_empty_outputs(self):
-        """Execute `cleanup_empty_outputs`.
+        """Xóa các thư mục output rỗng khi train bị interrupt hoặc lỗi sớm.
 
-        Args:
-            None.
-
-        Returns:
-            None: This function returns no value.
+        Log file KHÔNG bị xóa nếu đã có nội dung — giữ lại thông tin
+        debug khi training crash giữa chừng.
         """
         if self.log_file is not None:
             self.log_file.close()
             self.log_file = None
+
+        # Chỉ xóa images dir nếu rỗng
         self._remove_dir_if_effectively_empty(os.path.join(self.config.log_dir, 'images'))
-        self._remove_dir_if_effectively_empty(self.config.log_dir)
+
+        # Chỉ xóa log_dir nếu KHÔNG có training.log (hoặc log rỗng)
+        log_path = os.path.join(self.config.log_dir, 'training.log')
+        log_has_content = os.path.exists(log_path) and os.path.getsize(log_path) > 0
+        if not log_has_content:
+            self._remove_dir_if_effectively_empty(self.config.log_dir)
+
+        # Chỉ xóa checkpoint_dir nếu rỗng
         self._remove_dir_if_effectively_empty(self.config.checkpoint_dir)
 
     def _ensure_output_dirs(self):
@@ -514,8 +525,8 @@ class Trainer:
         elif self.config.lr_scheduler == 'step':
             scheduler = optim.lr_scheduler.StepLR(
                 self.optimizer,
-                step_size=30,
-                gamma=0.5
+                step_size=int(getattr(self.config, 'lr_step_size', 30)),
+                gamma=float(getattr(self.config, 'lr_step_gamma', 0.5)),
             )
         elif self.config.lr_scheduler == 'plateau':
             scheduler = optim.lr_scheduler.ReduceLROnPlateau(
@@ -848,7 +859,9 @@ class Trainer:
         Returns:
             None: This function returns no value.
         """
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        # weights_only=False vì checkpoint chứa config object (Python dict/class).
+        # Chỉ load từ nguồn đáng tin cậy.
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         
         _, converted_keys = load_state_dict_compat(
             self.model, checkpoint['model_state_dict'], strict=True
@@ -1028,8 +1041,12 @@ def main():
     """
     parser = argparse.ArgumentParser(description='Train Hyperspectral SR Model')
     parser.add_argument('--config', type=str, default='default',
-                       choices=CONFIG_PRESET_CHOICES,
-                       help='Configuration preset')
+                       help=(
+                           'Config preset. Built-in: ' +
+                           ', '.join(CONFIG_PRESET_CHOICES) +
+                           '. Dataset presets: cave, harvard, chikusei, pavia '
+                           '(thêm _x2 hoặc _x4, ví dụ: cave_x2, pavia_x4).'
+                       ))
     parser.add_argument('--data_root', type=str, default=None,
                        help='Override data root path')
     parser.add_argument('--resume', type=str, default=None,

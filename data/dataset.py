@@ -179,16 +179,27 @@ def _load_hyperspectral_scene_dir(scene_dir):
 
 
 def load_hyperspectral_image(path):
-    """Execute `load_hyperspectral_image`.
+    """Load a hyperspectral cube from disk.
+
+    Supported formats:
+      - .npy  : numpy array [H,W,C] or [C,H,W] float32
+      - .mat  : MATLAB v5 or v7.3 (HDF5) with auto key detection
+      - dir/  : folder of per-band PNG/TIFF images (CAVE-style)
 
     Args:
-        path: Input parameter `path`.
+        path: Path to file or directory.
 
     Returns:
-        Any: Output produced by this function.
+        np.ndarray [H,W,C] float32.
     """
     if os.path.isdir(path):
         img = _load_hyperspectral_scene_dir(path)
+    elif path.lower().endswith('.npy'):
+        # .npy produced by prepare_datasets.py — already [H,W,C] float32
+        img = np.load(path)
+        if img.ndim != 3:
+            raise ValueError(f"Expected 3D array in {path}, got shape={img.shape}")
+        img = _to_hwc_cube(img)
     else:
         try:
             mat_data = sio.loadmat(path)
@@ -271,14 +282,14 @@ def load_dataset_with_fallback(dataset_cls, primary_split, fallback_split='train
 
 
 def downsample_mean(img, scale):
-    """Execute `downsample_mean`.
+    """Downsample [H,W,C] image by averaging scale×scale blocks.
 
     Args:
-        img: Input parameter `img`.
-        scale: Input parameter `scale`.
+        img: np.ndarray [H,W,C] float32.
+        scale: Integer downscale factor.
 
     Returns:
-        Any: Output produced by this function.
+        np.ndarray [H//scale, W//scale, C] float32.
     """
     h, w, c = img.shape
     new_h, new_w = h // scale, w // scale
@@ -287,6 +298,50 @@ def downsample_mean(img, scale):
 
     trimmed = img[:new_h * scale, :new_w * scale, :]
     return trimmed.reshape(new_h, scale, new_w, scale, c).mean(axis=(1, 3)).astype(np.float32)
+
+
+def downsample_bicubic(img, scale):
+    """Downsample [H,W,C] image using bicubic interpolation (per-band).
+
+    Bicubic matches the standard convention used in most SR papers
+    including SSPSR and ESSA. Each spectral band is resized independently.
+
+    Requires: PIL (Pillow).
+
+    Args:
+        img: np.ndarray [H,W,C] float32, values in [0, 1].
+        scale: Integer downscale factor.
+
+    Returns:
+        np.ndarray [H//scale, W//scale, C] float32.
+    """
+    if Image is None:
+        raise ImportError(
+            "Pillow is required for bicubic downsampling. "
+            "Install with: pip install Pillow"
+        )
+
+    h, w, c = img.shape
+    new_h, new_w = h // scale, w // scale
+    if new_h == 0 or new_w == 0:
+        raise ValueError(f"Image too small for scale={scale}: shape={img.shape}")
+
+    # Trim so output is exactly new_h*scale × new_w*scale
+    img = img[:new_h * scale, :new_w * scale, :]
+
+    # Resize each band independently — PIL BICUBIC works on 2D images
+    # Convert float32 [0,1] → uint16 for precision, resize, convert back
+    lr_bands = []
+    for b in range(c):
+        band = img[:, :, b]
+        # Scale to uint16 range for lossless round-trip through PIL
+        band_u16 = (band * 65535.0).clip(0, 65535).astype(np.uint16)
+        pil_img = Image.fromarray(band_u16, mode='I;16')
+        pil_lr = pil_img.resize((new_w, new_h), Image.BICUBIC)
+        lr_band = np.array(pil_lr, dtype=np.float32) / 65535.0
+        lr_bands.append(lr_band)
+
+    return np.stack(lr_bands, axis=-1)
 
 
 def _load_hyperspectral_image_or_none(path):
@@ -306,19 +361,25 @@ def _load_hyperspectral_image_or_none(path):
 
 
 def _filter_valid_hsi_paths(paths, split):
-    """Internal helper for `filter_valid_hsi_paths` operations.
+    """Filter paths to valid hyperspectral files.
+
+    Accepts all formats supported by load_hyperspectral_image:
+    .mat, .npy, HDF5, scene directories, and band image files.
 
     Args:
-        paths: Input parameter `paths`.
-        split: Input parameter `split`.
+        paths: List of file/directory paths from split.json.
+        split: Split name (for logging).
 
     Returns:
-        Any: Output produced by this function.
+        List of valid paths.
     """
     valid = []
     skipped = []
     for path in paths:
-        if is_hyperspectral_path(path):
+        # Accept .npy in addition to formats known by is_hyperspectral_path
+        if path.lower().endswith('.npy') and os.path.exists(path):
+            valid.append(path)
+        elif is_hyperspectral_path(path):
             valid.append(path)
         else:
             skipped.append(path)
@@ -462,16 +523,16 @@ class HyperspectralDataset(Dataset):
     # ------------------------------------------------------
 
     def _downsample(self, img, scale):
-        """Internal helper for `downsample` operations.
+        """Downsample HR patch to create LR input using bicubic interpolation.
 
         Args:
-            img: Input parameter `img`.
-            scale: Input parameter `scale`.
+            img: np.ndarray [H,W,C] float32.
+            scale: Integer downscale factor.
 
         Returns:
-            Any: Output produced by this function.
+            np.ndarray [H//scale, W//scale, C] float32.
         """
-        return downsample_mean(img, scale)
+        return downsample_bicubic(img, scale)
 
     # ------------------------------------------------------
 
@@ -699,9 +760,9 @@ class HyperspectralTestDataset(Dataset):
             )
 
         img = normalize_image(img)
-        lr = downsample_mean(img, self.upscale)
-        # Match HR size to the effective region used to synthesize LR.
-        # downsample_mean truncates borders not divisible by `upscale`.
+        lr = downsample_bicubic(img, self.upscale)
+        # Trim HR to match LR exactly — downsample_bicubic truncates
+        # pixels not divisible by upscale before resizing.
         hr_h = lr.shape[0] * self.upscale
         hr_w = lr.shape[1] * self.upscale
         img = img[:hr_h, :hr_w, :]

@@ -162,8 +162,11 @@ def test_full_image(
 
         # Crop border (theo paper ESSA)
         if crop_border and scale > 1:
-            sr = sr[:, :, scale:-scale, scale:-scale]
-            hr = hr[:, :, scale:-scale, scale:-scale]
+            # Crop scale pixels trên mỗi cạnh (paper-style, tránh boundary artifacts)
+            # Dùng explicit index thay vì -scale để tránh off-by-one khi scale lớn
+            h, w = hr.shape[-2], hr.shape[-1]
+            sr = sr[:, :, scale:h - scale, scale:w - scale]
+            hr = hr[:, :, scale:h - scale, scale:w - scale]
 
         # Clamp to [0, 1]   
         sr = sr.clamp(0.0, 1.0)
@@ -243,7 +246,8 @@ def test_full_image(
         "SAM": float(np.mean(sam_list)),
         "ERGAS": float(np.mean(ergas_list)),
         "num_images": len(psnr_list),
-        "total_inference_time_sec": float(total_test_time),
+        # total_test_time bao gồm cả save images — đây là wall-clock time, không chỉ inference
+        "total_test_time_sec": float(total_test_time),
         "avg_time_per_image_sec": float(total_test_time / max(1, len(psnr_list)))
     }
     
@@ -267,8 +271,11 @@ def main():
     parser.add_argument('--data_root', type=str, required=True,
                        help='Path to test data')
     parser.add_argument('--config', type=str, default=None,
-                       choices=CONFIG_PRESET_CHOICES,
-                       help='Config preset (optional, will use checkpoint config if not provided)')
+                       help=(
+                           'Config preset (optional, dùng checkpoint config nếu không set). '
+                           f'Built-in: {", ".join(CONFIG_PRESET_CHOICES)}. '
+                           'Dataset presets: cave, harvard, chikusei, pavia (+ _x2/_x4).'
+                       ))
     parser.add_argument(
         '--device',
         type=str,
@@ -279,13 +286,18 @@ def main():
     parser.add_argument(
         '--chop_patch_size',
         type=int,
-        default=32,
-        help='LR patch size for sliding-window inference (smaller = safer memory, slower)'
+        default=64,
+        help=(
+            'LR patch size for sliding-window inference. '
+            'Larger = fewer tiles, less averaging artifact, faster. '
+            'For CAVE (LR ~128×128) dùng --chop_patch_size 128 để 1 forward pass. '
+            'Giảm xuống nếu OOM.'
+        )
     )
     parser.add_argument(
         '--chop_overlap',
         type=int,
-        default=8,
+        default=16,
         help='Overlap size between LR patches (higher = smoother seams, slower)'
     )
     parser.add_argument(
@@ -326,7 +338,8 @@ def main():
     
     # Load checkpoint
     print(f"\nLoading checkpoint: {args.checkpoint}")
-    checkpoint = torch.load(args.checkpoint, map_location='cpu')
+    # weights_only=False vì checkpoint chứa config Python object
+    checkpoint = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
     
     # Get config from checkpoint or use provided config
     checkpoint_num_bands = None
@@ -424,7 +437,10 @@ def main():
 
     print(f"\nTest set: {len(test_dataset)} images")
 
-    # Build model after auto-detecting num_bands from dataset
+    # Load model weights
+    # Lưu ý: nếu train dùng use_ema=True, best.pth lưu model weights TRƯỚC KHI apply EMA
+    # (EMA chỉ được apply trong validate()). Checkpoint 'model_state_dict' là EMA-applied
+    # weights vì validate() gọi ema.apply_shadow() rồi save. Không cần xử lý thêm.
     model = build_model_from_config(config, num_bands_override=detected_num_bands)
     _, converted_keys = load_state_dict_compat(
         model, checkpoint['model_state_dict'], strict=True
@@ -489,7 +505,7 @@ def main():
         print(f"  SSIM  : {avg_metrics['SSIM']:.4f}")
         print(f"  SAM   : {avg_metrics['SAM']:.3f}°")
         print(f"  ERGAS : {avg_metrics['ERGAS']:.3f}")
-        print(f"  Inference Total Time : {format_duration(avg_metrics['total_inference_time_sec'])} ({avg_metrics['total_inference_time_sec']:.2f} seconds)")
+        print(f"  Test Wall-clock Time : {format_duration(avg_metrics['total_test_time_sec'])} ({avg_metrics['total_test_time_sec']:.2f} seconds) (includes save)")
         print(f"  Avg Time / Image     : {format_duration(avg_metrics['avg_time_per_image_sec'])} ({avg_metrics['avg_time_per_image_sec']:.2f} seconds)")
         print(f"  Total Runtime        : {format_duration(total_runtime_sec)} ({total_runtime_sec:.2f} seconds)")
         print("="*70)
@@ -528,7 +544,7 @@ def main():
             f.write(f"SSIM  : {avg_metrics['SSIM']:.4f}\n")
             f.write(f"SAM   : {avg_metrics['SAM']:.3f}°\n")
             f.write(f"ERGAS : {avg_metrics['ERGAS']:.3f}\n")
-            f.write(f"Inference Total Time : {format_duration(avg_metrics['total_inference_time_sec'])} ({avg_metrics['total_inference_time_sec']:.2f} seconds)\n")
+            f.write(f"Test Wall-clock Time : {format_duration(avg_metrics['total_test_time_sec'])} ({avg_metrics['total_test_time_sec']:.2f} seconds) (includes save)\n")
             f.write(f"Avg Time / Image     : {format_duration(avg_metrics['avg_time_per_image_sec'])} ({avg_metrics['avg_time_per_image_sec']:.2f} seconds)\n")
             f.write(f"Total Runtime        : {format_duration(total_runtime_sec)} ({total_runtime_sec:.2f} seconds)\n")
             f.write("="*70 + "\n\n")

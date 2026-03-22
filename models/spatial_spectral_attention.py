@@ -120,21 +120,27 @@ class SpatialSpectralAttention(nn.Module):
     ĐÂY LÀ MODULE ĐỀ XUẤT CHÍNH CỦA KHÓA LUẬN!
     """
     
-    def __init__(self, num_channels, reduction=4, kernel_size=7, fusion_mode='sequential'):
+    def __init__(self, num_channels, reduction=4, kernel_size=7, fusion_mode='sequential', use_residual=True):
         """Initialize the `SpatialSpectralAttention` instance.
 
         Args:
-            num_channels: Input parameter `num_channels`.
-            reduction: Input parameter `reduction`.
-            kernel_size: Input parameter `kernel_size`.
-            fusion_mode: Input parameter `fusion_mode`.
+            num_channels: Number of input/output channels.
+            reduction: Channel reduction ratio for SpectralAttention MLP.
+            kernel_size: Kernel size for SpatialAttention convolution.
+            fusion_mode: How spectral and spatial branches are combined.
+                'sequential' — spectral then spatial (default).
+                'parallel'   — both applied to input, outputs summed.
+                'adaptive'   — learned alpha/beta weighting.
+            use_residual: Add a skip connection over the full attention block.
+                Set False when the caller (e.g. SSAMBlock) owns the residual.
 
         Returns:
             None: This method initializes state and returns no value.
         """
         super(SpatialSpectralAttention, self).__init__()
-        
+
         self.fusion_mode = fusion_mode
+        self.use_residual = use_residual
         
         # Spectral attention branch
         self.spectral_attention = SpectralAttention(num_channels, reduction)
@@ -175,10 +181,10 @@ class SpatialSpectralAttention(nn.Module):
         
         else:
             raise ValueError(f"Unknown fusion mode: {self.fusion_mode}")
-        
-        # Residual connection
-        out = out + x
-        
+
+        if self.use_residual:
+            out = out + x
+
         return out
 
 
@@ -206,12 +212,13 @@ class SSAMBlock(nn.Module):
         self.conv1 = nn.Conv2d(num_channels, num_channels, 3, 1, 1)
         self.relu1 = nn.LeakyReLU(0.2, inplace=True)
         
-        # SSAM module
+        # SSAM module — residual handled by this block, not internally
         self.ssam = SpatialSpectralAttention(
-            num_channels, 
+            num_channels,
             reduction=reduction,
             kernel_size=kernel_size,
-            fusion_mode=fusion_mode
+            fusion_mode=fusion_mode,
+            use_residual=False,
         )
         
         # Post-processing convolution

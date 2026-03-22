@@ -1,0 +1,31 @@
+# Bắt buộc set trước, paste vào ~/.zshrc luôn
+export PYTORCH_ENABLE_MPS_FALLBACK=1
+
+
+
+# ── Ngày 1 ──────────────────────────────────────────────
+python check_mps.py --dataset cave           # 2 phút, kiểm tra trước
+python train.py --config cave    --data_root ./data/CAVE   # ~2.5h
+python train.py --config cave_x2 --data_root ./data/CAVE   # ~2.5h, chạy nối tiếp
+
+# ── Ngày 2 (để qua đêm) ─────────────────────────────────
+python check_mps.py --dataset harvard --patch 96
+python train.py --config harvard --data_root ./data/Harvard  # ~4.3h
+
+# ── Ngày 3 (để qua đêm) ─────────────────────────────────
+python train.py --config harvard_x2 --data_root ./data/Harvard
+
+# ── Ngày 4 (để qua đêm) ─────────────────────────────────
+python check_mps.py --dataset chikusei --dim 64
+python train.py --config chikusei --data_root ./data/Chikusei  # ~5.8h
+
+# ── Ngày 5 ──────────────────────────────────────────────
+python train.py --config chikusei_x2 --data_root ./data/Chikusei
+
+# ── Ngày 6 (2 run nối tiếp, để qua đêm) ────────────────
+python check_mps.py --dataset pavia --dim 64 --patch 48
+python train.py --config pavia    --data_root ./data/Pavia    # ~3.5h
+python train.py --config pavia_x2 --data_root ./data/Pavia    # ~3.5h
+
+# ── Ngày 7 ──────────────────────────────────────────────
+# Load best.pth của mỗi run → chạy evaluation trên test split → ghi bảng

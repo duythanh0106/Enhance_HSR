@@ -80,7 +80,7 @@ class Config:
         self.warmup_start_lr = 1e-6  # Starting LR used at warmup epoch 1.
         
         # Optimizer settings.
-        self.optimizer = 'adam'  # Optimizer type: 'adam' or 'adamw'.
+        self.optimizer = 'adamw'  # Optimizer type: 'adam' or 'adamw'.
         self.weight_decay = 0.0  # L2 regularization coefficient.
         self.betas = (0.9, 0.999)  # Adam/AdamW momentum coefficients.
         
@@ -108,10 +108,10 @@ class Config:
         # ============================================================
         # VALIDATION & CHECKPOINT
         # ============================================================
-        self.validate_every = 1  # Run validation every N epochs.
+        self.validate_every = 5  # Run validation every N epochs (5 = less noisy for small val sets).
         self.save_checkpoint_every = 10  # Save periodic checkpoint every N epochs.
         # Best-checkpoint selection strategy.
-        self.best_selection_metric = 'psnr'  # Criterion for best model: 'psnr' or 'composite'.
+        self.best_selection_metric = 'composite'  # Composite more robust than PSNR alone on small val sets.
         self.best_score_weights = {
             'psnr': 0.45,
             'ssim': 0.25,
@@ -138,7 +138,7 @@ class Config:
         # ============================================================
         self.log_interval = 10  # Progress logging frequency in training iterations.
         self.save_images = True  # Save qualitative output images during evaluation/validation workflows.
-        self.use_ema = False  # Use Exponential Moving Average weights for validation/checkpointing.
+        self.use_ema = True   # EMA weights give more stable val metrics (critical for small val sets).
         self.ema_decay = 0.999  # EMA decay factor (higher = smoother but slower adaptation).
         
         # ============================================================
@@ -337,10 +337,10 @@ class ConfigSpecTrans(Config):
         """
         super().__init__()
         self.model_name = 'ESSA_SSAM_SpecTrans'  # Use ESSA + SSAM + spectral transformer blocks.
-        self.feature_dim = 128  # Feature width for the proposed full model.
+        self.feature_dim = 192  # Feature width for the proposed full model.
         self.fusion_mode = 'sequential'  # SSAM fusion strategy.
         self.use_spectrans = True  # Enable spectral transformer refinement branch.
-        self.spectrans_depth = 2  # Number of spectral transformer blocks.
+        self.spectrans_depth = 3  # Number of spectral transformer blocks.
         self.loss_type = 'combined'  # Multi-term objective for reconstruction + spectral structure.
         self.lambda_l1 = 1.0  # Pixel fidelity weight.
         self.lambda_sam = 0.1  # Spectral angle weight.
@@ -454,10 +454,10 @@ class ConfigUniversalBest(ConfigSpecTrans):
 
         if is_single_scene:
             # Single-scene datasets need heavier random patch sampling per epoch.
-            self.train_virtual_samples_per_epoch = 2000  # Increase optimization steps per epoch from one scene.
-            self.val_virtual_samples_per_epoch = 256  # Increase validation sampling stability.
+            self.train_virtual_samples_per_epoch = 800  # Increase optimization steps per epoch from one scene.
+            self.val_virtual_samples_per_epoch = 128  # Increase validation sampling stability.
             self.cache_in_memory = True  # Avoid reloading the same huge scene from disk every iteration.
-            self.num_epochs = 100  # Lower epoch count because each epoch already has many virtual samples.
+            self.num_epochs = 200  # Lower epoch count because each epoch already has many virtual samples.
             self.patch_size = 64  # Keep patch size stable for memory and overlap behavior.
             self.batch_size = 1  # Keep memory-safe default.
             self.num_workers = 0  # Avoid dataloader overhead for single large file workflows.
@@ -465,7 +465,7 @@ class ConfigUniversalBest(ConfigSpecTrans):
             self.ema_decay = 0.9995  # Stronger smoothing for noisy validation curves.
             self.loss_phase1_ratio = 0.5  # Spend longer in conservative loss phase.
             self.loss_phase_transition_epochs = 30  # Smoother transition to final loss weights.
-            self.early_stopping_patience = 12  # Faster stop if no meaningful gain.
+            self.early_stopping_patience = 25  # Faster stop if no meaningful gain.
             self.early_stopping_start_epoch = 25  # Start early-stopping after sufficient warmup/training.
         else:
             # Multi-scene datasets usually have enough natural diversity.
@@ -484,6 +484,158 @@ class ConfigUniversalBest(ConfigSpecTrans):
             self.early_stopping_start_epoch = 40  # Start early-stop after stable convergence begins.
 
 
+
+class _ConfigDatasetBase(ConfigUniversalBest):
+    """Base class cho dataset-specific configs."""
+
+    _DATA_ROOT = './data/dataset'
+    _FEATURE_DIM = 128
+    _SPECTRANS_DEPTH = 2
+    _UPSCALE = 4
+
+    def __init__(self):
+        super().__init__()
+        self.data_root = self._DATA_ROOT
+        self.feature_dim = self._FEATURE_DIM
+        self.use_spectrans = True
+        self.spectrans_depth = self._SPECTRANS_DEPTH
+        self.upscale_factor = self._UPSCALE
+        self.apply_dataset_profile()
+        self._apply_subclass_profile()
+        self.refresh_output_paths()
+
+    def _apply_subclass_profile(self):
+        pass
+
+    @classmethod
+    def build_x2(cls):
+        obj = cls.__new__(cls)
+        obj._UPSCALE = 2
+        obj.__init__()
+        return obj
+
+
+class ConfigCAVE(_ConfigDatasetBase):
+    """CAVE: 31 bands, 32 scenes.
+
+    Fixes cho val instability:
+    - val_virtual_samples_per_epoch=50: validate trên 50 patches thay vì 3 scenes
+    - use_ema=True: EMA weights cho val curve mượt hơn
+    - validate_every=5: bớt noise khi nhìn curve theo epoch
+    - best_selection_metric='composite': ít bị ảnh hưởng bởi PSNR spike
+    """
+    _DATA_ROOT = './data/CAVE'
+    _FEATURE_DIM = 128
+    _SPECTRANS_DEPTH = 2
+
+    def _apply_subclass_profile(self):
+        self.learning_rate = 2e-4
+        self.lr_min = 1e-7
+        self.warmup_epochs = 5
+        self.patch_size = 64
+        self.num_workers = 0
+        self.mixed_precision = False
+        self.num_epochs = 1000
+        self.use_ema = True
+        self.ema_decay = 0.999
+        self.validate_every = 5
+        self.train_ratio = 0.656   # ~21 ảnh
+        self.val_ratio   = 0.094   # ~3 ảnh  
+        self.test_ratio  = 0.25    # ~8 ảnh
+        self.regenerate_split = False
+        # Key fix: sample 50 patches từ val scenes thay vì dùng 3 scenes nguyên
+        # 192 = 3 val scenes × 64 non-overlap patches (512×512 / 64×64)
+        # Dùng toàn bộ val patches → PSNR ổn định hơn nhiều so với random 50
+        self.val_virtual_samples_per_epoch = 192
+        self.best_selection_metric = 'composite'
+        self.loss_phase1_ratio = 0.3
+        self.loss_phase_transition_epochs = 10
+        self.early_stopping_patience = 80   # patience tính theo val runs, không phải epochs
+        self.early_stopping_start_epoch = 20  # = 20 val runs × 5 epochs = epoch 100
+        self.split_seed=1
+
+
+class ConfigHarvard(_ConfigDatasetBase):
+    """Harvard: 31 bands, ~50 scenes."""
+    _DATA_ROOT = './data/Harvard'
+    _FEATURE_DIM = 128
+    _SPECTRANS_DEPTH = 2
+
+    def _apply_subclass_profile(self):
+        self.learning_rate = 1e-4
+        self.lr_min = 1e-7
+        self.warmup_epochs = 10
+        self.patch_size = 96
+        self.num_workers = 0
+        self.mixed_precision = False
+        self.num_epochs = 800
+        self.use_ema = True
+        self.ema_decay = 0.999
+        self.validate_every = 5
+        self.val_virtual_samples_per_epoch = 50
+        self.best_selection_metric = 'composite'
+        self.loss_phase1_ratio = 0.35
+        self.loss_phase_transition_epochs = 15
+        self.early_stopping_patience = 60
+        self.early_stopping_start_epoch = 20
+
+
+class ConfigChikusei(_ConfigDatasetBase):
+    """Chikusei: 128 bands, single scene."""
+    _DATA_ROOT = './data/Chikusei'
+    _FEATURE_DIM = 64
+    _SPECTRANS_DEPTH = 1
+
+    def _apply_subclass_profile(self):
+        self.learning_rate = 1e-4
+        self.lr_min = 1e-7
+        self.warmup_epochs = 20
+        self.patch_size = 64
+        self.batch_size = 1
+        self.num_workers = 0
+        self.mixed_precision = False
+        self.train_virtual_samples_per_epoch = 400
+        self.val_virtual_samples_per_epoch = 80
+        self.cache_in_memory = True
+        self.num_epochs = 400
+        self.use_ema = True
+        self.ema_decay = 0.9995
+        self.validate_every = 5
+        self.best_selection_metric = 'composite'
+        self.loss_phase1_ratio = 0.45
+        self.loss_phase_transition_epochs = 25
+        self.early_stopping_patience = 40
+        self.early_stopping_start_epoch = 40
+
+
+class ConfigPavia(_ConfigDatasetBase):
+    """Pavia: 102 bands, single scene."""
+    _DATA_ROOT = './data/Pavia'
+    _FEATURE_DIM = 64
+    _SPECTRANS_DEPTH = 1
+
+    def _apply_subclass_profile(self):
+        self.learning_rate = 1e-4
+        self.lr_min = 1e-7
+        self.warmup_epochs = 20
+        self.patch_size = 48
+        self.batch_size = 1
+        self.num_workers = 0
+        self.mixed_precision = False
+        self.train_virtual_samples_per_epoch = 500
+        self.val_virtual_samples_per_epoch = 80
+        self.cache_in_memory = True
+        self.num_epochs = 300
+        self.use_ema = True
+        self.ema_decay = 0.9995
+        self.validate_every = 5
+        self.best_selection_metric = 'composite'
+        self.loss_phase1_ratio = 0.45
+        self.loss_phase_transition_epochs = 25
+        self.early_stopping_patience = 30
+        self.early_stopping_start_epoch = 30
+
+
 CONFIG_PRESETS = {
     'default': Config,
     'baseline': ConfigBaseline,
@@ -491,25 +643,39 @@ CONFIG_PRESETS = {
     'spectrans': ConfigSpecTrans,
     'lightweight': ConfigLightweight,
     'universal_best': ConfigUniversalBest,
+    'cave': ConfigCAVE,
+    'harvard': ConfigHarvard,
+    'chikusei': ConfigChikusei,
+    'pavia': ConfigPavia,
 }
 
 CONFIG_PRESET_CHOICES = tuple(CONFIG_PRESETS.keys())
+_X2_DATASETS = {'cave', 'harvard', 'chikusei', 'pavia'}
 
 
 def build_config(preset='default'):
-    """Execute `build_config`.
-
-    Args:
-        preset: Input parameter `preset`.
-
-    Returns:
-        Any: Output produced by this function.
-    """
+    """Tạo config từ preset. Hỗ trợ suffix _x2/_x4, ví dụ 'cave_x2'."""
     key = str(preset or 'default').lower()
+
+    scale = None
+    for suffix, factor in (('_x2', 2), ('_x4', 4)):
+        if key.endswith(suffix):
+            key = key[:-len(suffix)]
+            scale = factor
+            break
+
     if key not in CONFIG_PRESETS:
-        supported = ", ".join(CONFIG_PRESET_CHOICES)
-        raise ValueError(f"Unknown config preset: {preset}. Supported: {supported}")
-    return CONFIG_PRESETS[key]()
+        supported = ', '.join(
+            list(CONFIG_PRESET_CHOICES) +
+            [f'{d}_x2' for d in _X2_DATASETS] +
+            [f'{d}_x4' for d in _X2_DATASETS]
+        )
+        raise ValueError(f"Unknown config preset: '{preset}'. Supported:\n  {supported}")
+
+    cls = CONFIG_PRESETS[key]
+    if scale == 2 and key in _X2_DATASETS:
+        return cls.build_x2()
+    return cls()
 
 
 # Test code
