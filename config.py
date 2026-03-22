@@ -681,7 +681,7 @@ CONFIG_PRESETS = {
 }
 
 CONFIG_PRESET_CHOICES = tuple(CONFIG_PRESETS.keys())
-_X2_DATASETS = {'cave', 'harvard', 'chikusei', 'pavia'}
+_X2_DATASETS = {'cave', 'harvard', 'chikusei', 'pavia', 'baseline_cave', 'baseline_harvard', 'baseline_chikusei', 'baseline_pavia'}
 
 
 def build_config(preset='default'):
