@@ -576,7 +576,7 @@ class ConfigHarvard(_ConfigDatasetBase):
 class ConfigChikusei(_ConfigDatasetBase):
     """Chikusei: 128 bands, single scene."""
     _DATA_ROOT = './dataset/Chikusei'
-    _FEATURE_DIM = 128
+    _FEATURE_DIM = 64
     _SPECTRANS_DEPTH = 1
 
     def _apply_subclass_profile(self):
@@ -604,7 +604,7 @@ class ConfigChikusei(_ConfigDatasetBase):
 class ConfigPavia(_ConfigDatasetBase):
     """Pavia: 102 bands, single scene."""
     _DATA_ROOT = './dataset/Pavia'
-    _FEATURE_DIM = 128
+    _FEATURE_DIM = 64
     _SPECTRANS_DEPTH = 1
 
     def _apply_subclass_profile(self):
