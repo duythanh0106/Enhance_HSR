@@ -298,9 +298,7 @@ class ConfigBaseline(Config):
         super().__init__()
         self.model_name = 'ESSA_Original'  # Switch to original ESSA architecture (baseline variant).
         self.feature_dim = 128  # Baseline channel width used in the original setup.
-        self.use_two_phase_loss = True
-        self.num_workers = 0
-        self.loss_type = 'combined'  # Baseline objective for fair comparison.
+        self.loss_type = 'l1'  # Baseline objective for fair comparison.
         self.refresh_output_paths()
 
 
@@ -526,7 +524,7 @@ class ConfigCAVE(_ConfigDatasetBase):
     - validate_every=5: bớt noise khi nhìn curve theo epoch
     - best_selection_metric='composite': ít bị ảnh hưởng bởi PSNR spike
     """
-    _DATA_ROOT = './data/CAVE'
+    _DATA_ROOT = './dataset/CAVE'
     _FEATURE_DIM = 128
     _SPECTRANS_DEPTH = 2
 
@@ -541,25 +539,18 @@ class ConfigCAVE(_ConfigDatasetBase):
         self.use_ema = True
         self.ema_decay = 0.999
         self.validate_every = 5
-        self.train_ratio = 0.656   # ~21 ảnh
-        self.val_ratio   = 0.094   # ~3 ảnh  
-        self.test_ratio  = 0.25    # ~8 ảnh
-        self.regenerate_split = False
         # Key fix: sample 50 patches từ val scenes thay vì dùng 3 scenes nguyên
-        # 192 = 3 val scenes × 64 non-overlap patches (512×512 / 64×64)
-        # Dùng toàn bộ val patches → PSNR ổn định hơn nhiều so với random 50
-        self.val_virtual_samples_per_epoch = 192
+        self.val_virtual_samples_per_epoch = 50
         self.best_selection_metric = 'composite'
         self.loss_phase1_ratio = 0.3
         self.loss_phase_transition_epochs = 10
         self.early_stopping_patience = 80   # patience tính theo val runs, không phải epochs
         self.early_stopping_start_epoch = 20  # = 20 val runs × 5 epochs = epoch 100
-        self.split_seed=1
 
 
 class ConfigHarvard(_ConfigDatasetBase):
     """Harvard: 31 bands, ~50 scenes."""
-    _DATA_ROOT = './data/Harvard'
+    _DATA_ROOT = './dataset/Harvard'
     _FEATURE_DIM = 128
     _SPECTRANS_DEPTH = 2
 
@@ -584,8 +575,8 @@ class ConfigHarvard(_ConfigDatasetBase):
 
 class ConfigChikusei(_ConfigDatasetBase):
     """Chikusei: 128 bands, single scene."""
-    _DATA_ROOT = './data/Chikusei'
-    _FEATURE_DIM = 64
+    _DATA_ROOT = './dataset/Chikusei'
+    _FEATURE_DIM = 128
     _SPECTRANS_DEPTH = 1
 
     def _apply_subclass_profile(self):
@@ -612,8 +603,8 @@ class ConfigChikusei(_ConfigDatasetBase):
 
 class ConfigPavia(_ConfigDatasetBase):
     """Pavia: 102 bands, single scene."""
-    _DATA_ROOT = './data/Pavia'
-    _FEATURE_DIM = 64
+    _DATA_ROOT = './dataset/Pavia'
+    _FEATURE_DIM = 128
     _SPECTRANS_DEPTH = 1
 
     def _apply_subclass_profile(self):
@@ -638,6 +629,39 @@ class ConfigPavia(_ConfigDatasetBase):
         self.early_stopping_start_epoch = 30
 
 
+
+class ConfigBaselineCAVE(ConfigCAVE):
+    """Baseline ESSA gốc trên CAVE — cùng feature_dim và training config với proposed."""
+    def _apply_subclass_profile(self):
+        super()._apply_subclass_profile()
+        self.model_name = 'ESSA_Original'
+        self.use_spectrans = False
+
+
+class ConfigBaselineHarvard(ConfigHarvard):
+    """Baseline ESSA gốc trên Harvard — cùng feature_dim và training config với proposed."""
+    def _apply_subclass_profile(self):
+        super()._apply_subclass_profile()
+        self.model_name = 'ESSA_Original'
+        self.use_spectrans = False
+
+
+class ConfigBaselineChikusei(ConfigChikusei):
+    """Baseline ESSA gốc trên Chikusei — cùng feature_dim=128 và training config với proposed."""
+    def _apply_subclass_profile(self):
+        super()._apply_subclass_profile()
+        self.model_name = 'ESSA_Original'
+        self.use_spectrans = False
+
+
+class ConfigBaselinePavia(ConfigPavia):
+    """Baseline ESSA gốc trên Pavia — cùng feature_dim=128 và training config với proposed."""
+    def _apply_subclass_profile(self):
+        super()._apply_subclass_profile()
+        self.model_name = 'ESSA_Original'
+        self.use_spectrans = False
+
+
 CONFIG_PRESETS = {
     'default': Config,
     'baseline': ConfigBaseline,
@@ -649,6 +673,11 @@ CONFIG_PRESETS = {
     'harvard': ConfigHarvard,
     'chikusei': ConfigChikusei,
     'pavia': ConfigPavia,
+    # Baseline — same training config as proposed, only model differs
+    'baseline_cave':     ConfigBaselineCAVE,
+    'baseline_harvard':  ConfigBaselineHarvard,
+    'baseline_chikusei': ConfigBaselineChikusei,
+    'baseline_pavia':    ConfigBaselinePavia,
 }
 
 CONFIG_PRESET_CHOICES = tuple(CONFIG_PRESETS.keys())
