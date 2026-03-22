@@ -298,7 +298,9 @@ class ConfigBaseline(Config):
         super().__init__()
         self.model_name = 'ESSA_Original'  # Switch to original ESSA architecture (baseline variant).
         self.feature_dim = 128  # Baseline channel width used in the original setup.
-        self.loss_type = 'l1'  # Baseline objective for fair comparison.
+        self.use_two_phase_loss = True
+        self.num_workers = 0
+        self.loss_type = 'combined'  # Baseline objective for fair comparison.
         self.refresh_output_paths()
 
 
