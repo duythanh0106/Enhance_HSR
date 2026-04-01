@@ -12,6 +12,7 @@ import json
 import glob
 import random
 import scipy.io as sio
+import numpy as np
 
 try:
     import h5py
@@ -185,6 +186,208 @@ def is_hyperspectral_path(path):
     return False
 
 
+def _dataset_key(data_root):
+    """Normalize dataset root name for protocol-specific split rules."""
+    return "".join(ch.lower() for ch in os.path.basename(os.path.normpath(str(data_root))) if ch.isalnum())
+
+
+def _to_hwc_shape(shape):
+    """Map a 3D array shape to HWC using the same heuristic as the loader."""
+    if len(shape) != 3:
+        raise ValueError(f"Expected 3D shape, got {shape}")
+    smallest_axis = int(np.argmin(shape))
+    if smallest_axis == 2:
+        return tuple(int(v) for v in shape)
+    if smallest_axis == 0:
+        return int(shape[2]), int(shape[1]), int(shape[0])
+    return int(shape[0]), int(shape[2]), int(shape[1])
+
+
+def _extract_hwc_shape_from_mat_data(mat_data, path):
+    """Return HWC shape for the largest 3D numeric array in a loaded MAT dict."""
+    possible_keys = ["rad", "cube", "ref", "data", "img", "chikusei"]
+    for key in possible_keys:
+        if key in mat_data:
+            value = mat_data[key]
+            if isinstance(value, np.ndarray) and value.ndim == 3 and np.issubdtype(value.dtype, np.number):
+                return _to_hwc_shape(value.shape)
+
+    numeric_arrays = [
+        value for value in mat_data.values()
+        if isinstance(value, np.ndarray)
+        and value.ndim == 3
+        and np.issubdtype(value.dtype, np.number)
+    ]
+    if numeric_arrays:
+        largest = max(numeric_arrays, key=lambda x: x.size)
+        return _to_hwc_shape(largest.shape)
+
+    raise ValueError(f"No hyperspectral cube found in {path}")
+
+
+def _get_hyperspectral_hwc_shape(path):
+    """Load only enough metadata/data to determine HWC shape."""
+    try:
+        mat_data = sio.loadmat(path)
+        return _extract_hwc_shape_from_mat_data(mat_data, path)
+    except NotImplementedError:
+        if h5py is None:
+            raise ValueError(
+                f"{path} appears to be MATLAB v7.3, but h5py is not installed."
+            )
+        with h5py.File(path, "r") as f:
+            possible_keys = ["rad", "cube", "ref", "data", "img", "chikusei"]
+            for key in possible_keys:
+                if key in f and isinstance(f[key], h5py.Dataset) and len(f[key].shape) == 3:
+                    return _to_hwc_shape(f[key].shape)
+
+            candidates = []
+
+            def visitor(name, obj):
+                if isinstance(obj, h5py.Dataset) and len(obj.shape) == 3:
+                    candidates.append(name)
+
+            f.visititems(visitor)
+            if candidates:
+                best_name = max(candidates, key=lambda n: np.prod(f[n].shape))
+                return _to_hwc_shape(f[best_name].shape)
+
+    raise ValueError(f"No hyperspectral cube shape found in {path}")
+
+
+def _make_crop_entry(path, sample_id, top, left, height, width):
+    """Create one split entry for a fixed crop region inside a raw HSI cube."""
+    return {
+        "path": path,
+        "id": sample_id,
+        "crop": [int(top), int(left), int(height), int(width)],
+    }
+
+
+def _generate_chikusei_protocol_split(sample_path, seed):
+    """Paper-style split with an added validation subset from train patches."""
+    height, width, _ = _get_hyperspectral_hwc_shape(sample_path)
+    patch_h = 512
+    patch_w = 512
+    grid_h = height // patch_h
+    grid_w = width // patch_w
+    ids = [(row, col) for row in range(grid_h) for col in range(grid_w)]
+    rng = random.Random(seed)
+    shuffled = ids.copy()
+    rng.shuffle(shuffled)
+    test_ids = set(shuffled[:4])
+    val_ids = set(shuffled[4:6])
+
+    train = []
+    val = []
+    test = []
+    for row, col in ids:
+        entry = _make_crop_entry(
+            sample_path,
+            f"chikusei_r{row:02d}_c{col:02d}",
+            row * patch_h,
+            col * patch_w,
+            patch_h,
+            patch_w,
+        )
+        if (row, col) in test_ids:
+            test.append(entry)
+        elif (row, col) in val_ids:
+            val.append(entry)
+        else:
+            train.append(entry)
+
+    total = len(train) + len(val) + len(test)
+
+    return {
+        "seed": seed,
+        "total": total,
+        "ratios": {
+            "train": len(train) / float(total),
+            "val": len(val) / float(total),
+            "test": len(test) / float(total),
+        },
+        "protocol": {
+            "type": "single_scene_non_overlapping_patches",
+            "dataset": "Chikusei",
+            "patch_size": [patch_h, patch_w],
+            "grid_shape": [grid_h, grid_w],
+            "val_count": len(val),
+            "test_count": len(test),
+        },
+        "train": train,
+        "val": val,
+        "test": test,
+    }
+
+
+def _generate_pavia_protocol_split(sample_path, seed):
+    """Paper-style test split with one validation strip carved from train."""
+    height, width, _ = _get_hyperspectral_hwc_shape(sample_path)
+    strip_h = 120
+    usable_w = min(width, 714)
+    num_strips = height // strip_h
+    num_test = min(3, num_strips)
+    num_train = max(0, num_strips - num_test)
+    num_val = 1 if num_train >= 2 else 0
+    val_idx = num_train - 1 if num_val else None
+
+    train = []
+    val = []
+    test = []
+    for idx in range(num_strips):
+        entry = _make_crop_entry(
+            sample_path,
+            f"pavia_strip_{idx:02d}",
+            idx * strip_h,
+            0,
+            strip_h,
+            usable_w,
+        )
+        if idx >= num_train:
+            test.append(entry)
+        elif val_idx is not None and idx == val_idx:
+            val.append(entry)
+        else:
+            train.append(entry)
+
+    total = len(train) + len(val) + len(test)
+    return {
+        "seed": seed,
+        "total": total,
+        "ratios": {
+            "train": len(train) / float(total) if total else 0.0,
+            "val": len(val) / float(total) if total else 0.0,
+            "test": len(test) / float(total) if total else 0.0,
+        },
+        "protocol": {
+            "type": "single_scene_non_overlapping_strips",
+            "dataset": "Pavia",
+            "patch_size": [strip_h, usable_w],
+            "usable_width": usable_w,
+            "val_count": len(val),
+            "test_count": len(test),
+        },
+        "train": train,
+        "val": val,
+        "test": test,
+    }
+
+
+def _generate_protocol_split_if_needed(data_root, valid_files, seed):
+    """Apply paper-style split rules for supported single-scene datasets."""
+    if len(valid_files) != 1 or not os.path.isfile(valid_files[0]) or not valid_files[0].lower().endswith(".mat"):
+        return None
+
+    dataset_key = _dataset_key(data_root)
+    sample_path = valid_files[0]
+    if "chikusei" in dataset_key:
+        return _generate_chikusei_protocol_split(sample_path, seed)
+    if "pavia" in dataset_key:
+        return _generate_pavia_protocol_split(sample_path, seed)
+    return None
+
+
 def _scan_hyperspectral_paths(data_root):
     """Scan dataset root and return supported hyperspectral sample paths.
 
@@ -284,33 +487,37 @@ def generate_split(
             "Expected at least one valid .mat cube or scene folder with band images."
         )
 
-    # 2️⃣ Shuffle reproducibly
-    rng = random.Random(seed)
-    rng.shuffle(valid_files)
+    protocol_split = _generate_protocol_split_if_needed(data_root, valid_files, seed)
+    if protocol_split is not None:
+        split_dict = protocol_split
+    else:
+        # 2️⃣ Shuffle reproducibly
+        rng = random.Random(seed)
+        rng.shuffle(valid_files)
 
-    # 3️⃣ Split
-    total = len(valid_files)
-    split_sizes = _compute_split_sizes(total, train_ratio, val_ratio, test_ratio)
-    train_size = split_sizes["train"]
-    val_size = split_sizes["val"]
-    test_size = split_sizes["test"]
+        # 3️⃣ Split
+        total = len(valid_files)
+        split_sizes = _compute_split_sizes(total, train_ratio, val_ratio, test_ratio)
+        train_size = split_sizes["train"]
+        val_size = split_sizes["val"]
+        test_size = split_sizes["test"]
 
-    train = valid_files[:train_size]
-    val = valid_files[train_size:train_size + val_size]
-    test = valid_files[train_size + val_size:train_size + val_size + test_size]
+        train = valid_files[:train_size]
+        val = valid_files[train_size:train_size + val_size]
+        test = valid_files[train_size + val_size:train_size + val_size + test_size]
 
-    split_dict = {
-        "seed": seed,
-        "total": total,
-        "ratios": {
-            "train": float(train_ratio),
-            "val": float(val_ratio),
-            "test": float(test_ratio),
-        },
-        "train": train,
-        "val": val,
-        "test": test,
-    }
+        split_dict = {
+            "seed": seed,
+            "total": total,
+            "ratios": {
+                "train": float(train_ratio),
+                "val": float(val_ratio),
+                "test": float(test_ratio),
+            },
+            "train": train,
+            "val": val,
+            "test": test,
+        }
 
     # 4️⃣ Save split
     if save:

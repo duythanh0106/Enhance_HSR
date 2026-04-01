@@ -192,7 +192,7 @@ def test_full_image(
         hr_np = hr_tensor.numpy()
         
         # Store per-image results
-        image_name = os.path.basename(filepath[0].rstrip(os.sep))
+        image_name = str(filepath[0])
         image_stem = os.path.splitext(image_name)[0]
         results_per_image.append({
             'image': image_name,

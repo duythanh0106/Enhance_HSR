@@ -550,7 +550,7 @@ class ConfigCAVE(_ConfigDatasetBase):
 
 class ConfigHarvard(_ConfigDatasetBase):
     """Harvard: 31 bands, ~50 scenes."""
-    _DATA_ROOT = './dataset/Harvard'
+    _DATA_ROOT = './dataset/HARVARD/HARVARD'
     _FEATURE_DIM = 128
     _SPECTRANS_DEPTH = 2
 

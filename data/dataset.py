@@ -6,6 +6,7 @@ Supports any hyperspectral dataset with automatic split & band detection
 import os
 import glob
 import re
+import json
 import torch
 from torch.utils.data import Dataset
 import numpy as np
@@ -360,6 +361,85 @@ def _load_hyperspectral_image_or_none(path):
         return None
 
 
+def _is_split_crop_entry(entry):
+    """Return True when split entry describes a fixed crop from one raw sample."""
+    return isinstance(entry, dict) and "path" in entry
+
+
+def _split_entry_path(entry):
+    """Resolve source hyperspectral path for a split entry."""
+    if _is_split_crop_entry(entry):
+        return str(entry["path"])
+    return str(entry)
+
+
+def _split_entry_crop(entry):
+    """Return (top, left, height, width) crop tuple or None."""
+    if not _is_split_crop_entry(entry):
+        return None
+    crop = entry.get("crop")
+    if crop is None or len(crop) != 4:
+        raise ValueError(f"Invalid split crop spec: {entry}")
+    top, left, height, width = [int(v) for v in crop]
+    return top, left, height, width
+
+
+def _split_entry_id(entry):
+    """Stable human-readable sample id for logging and saved results."""
+    if _is_split_crop_entry(entry):
+        sample_id = entry.get("id")
+        if sample_id:
+            return str(sample_id)
+        crop = _split_entry_crop(entry)
+        return f"{os.path.basename(_split_entry_path(entry))}:{crop}"
+    return _split_entry_path(entry)
+
+
+def _split_entry_cache_key(entry):
+    """Cache source cubes by real file path so crop entries reuse the same base image."""
+    return _split_entry_path(entry)
+
+
+def _format_split_entry_for_log(entry):
+    """Compact text for warnings/errors."""
+    if _is_split_crop_entry(entry):
+        return json.dumps(entry, ensure_ascii=True, sort_keys=True)
+    return str(entry)
+
+
+def _apply_entry_crop(img, entry):
+    """Apply fixed crop described in split.json entry, if any."""
+    crop = _split_entry_crop(entry)
+    if crop is None:
+        return img
+
+    top, left, height, width = crop
+    if top < 0 or left < 0 or height <= 0 or width <= 0:
+        raise ValueError(f"Invalid non-positive crop in split entry: {entry}")
+    bottom = top + height
+    right = left + width
+    if bottom > img.shape[0] or right > img.shape[1]:
+        raise ValueError(
+            f"Split crop {crop} exceeds image shape {img.shape[:2]} for {_split_entry_path(entry)}"
+        )
+    return img[top:bottom, left:right, :]
+
+
+def _load_split_entry_image(entry, cache=None):
+    """Load one split entry, then crop if the entry describes a spatial subset."""
+    cache_key = _split_entry_cache_key(entry)
+    base_img = None
+    if cache is not None:
+        base_img = cache.get(cache_key)
+    if base_img is None:
+        base_img = _load_hyperspectral_image_or_none(_split_entry_path(entry))
+        if base_img is not None and cache is not None:
+            cache[cache_key] = base_img
+    if base_img is None:
+        return None
+    return _apply_entry_crop(base_img, entry)
+
+
 def _filter_valid_hsi_paths(paths, split):
     """Filter paths to valid hyperspectral files.
 
@@ -376,10 +456,11 @@ def _filter_valid_hsi_paths(paths, split):
     valid = []
     skipped = []
     for path in paths:
+        real_path = _split_entry_path(path)
         # Accept .npy in addition to formats known by is_hyperspectral_path
-        if path.lower().endswith('.npy') and os.path.exists(path):
+        if real_path.lower().endswith('.npy') and os.path.exists(real_path):
             valid.append(path)
-        elif is_hyperspectral_path(path):
+        elif is_hyperspectral_path(real_path):
             valid.append(path)
         else:
             skipped.append(path)
@@ -390,7 +471,7 @@ def _filter_valid_hsi_paths(paths, split):
             f"in split '{split}'."
         )
         for bad in skipped[:5]:
-            print(f"   - {bad}")
+            print(f"   - {_format_split_entry_for_log(bad)}")
         if len(skipped) > 5:
             print(f"   ... and {len(skipped) - 5} more")
 
@@ -476,23 +557,26 @@ class HyperspectralDataset(Dataset):
         if self.cache_in_memory:
             print(f"Caching {len(self.image_paths)} image(s) for split '{self.split}' into memory...")
             for path in self.image_paths:
-                img = _load_hyperspectral_image_or_none(path)
+                cache_key = _split_entry_cache_key(path)
+                if cache_key in self._image_cache:
+                    continue
+                img = _load_hyperspectral_image_or_none(_split_entry_path(path))
                 if img is None:
                     raise RuntimeError(
-                        f"Failed to preload hyperspectral image for cache: {path}"
+                        f"Failed to preload hyperspectral image for cache: {_format_split_entry_for_log(path)}"
                     )
-                self._image_cache[path] = img
-            print(f"✅ Cached {len(self._image_cache)} image(s) in memory.")
+                self._image_cache[cache_key] = img
+            print(f"✅ Cached {len(self._image_cache)} source image(s) in memory.")
 
         # --------------------------------------------------
         # Auto detect spectral bands
         # --------------------------------------------------
         sample = None
         if self.cache_in_memory and self.image_paths:
-            sample = self._image_cache[self.image_paths[0]]
+            sample = _load_split_entry_image(self.image_paths[0], cache=self._image_cache)
         else:
             for path in self.image_paths:
-                sample = _load_hyperspectral_image_or_none(path)
+                sample = _load_split_entry_image(path)
                 if sample is not None:
                     break
         if sample is None:
@@ -614,15 +698,15 @@ class HyperspectralDataset(Dataset):
         """
         real_idx = idx % len(self.image_paths)
         image_path = self.image_paths[real_idx]
-        if self.cache_in_memory:
-            img = self._image_cache.get(image_path)
-        else:
-            img = _load_hyperspectral_image_or_none(image_path)
+        img = _load_split_entry_image(
+            image_path,
+            cache=self._image_cache if self.cache_in_memory else None,
+        )
 
         if img is None:
             bad_path = image_path
             raise RuntimeError(
-                f"Failed to load hyperspectral image: {bad_path}. "
+                f"Failed to load hyperspectral image: {_format_split_entry_for_log(bad_path)}. "
                 "Please verify sample path format and file integrity."
             )
 
@@ -699,20 +783,23 @@ class HyperspectralTestDataset(Dataset):
         if self.cache_in_memory:
             print(f"Caching {len(self.image_paths)} image(s) for split '{self.split}' into memory...")
             for path in self.image_paths:
-                img = _load_hyperspectral_image_or_none(path)
+                cache_key = _split_entry_cache_key(path)
+                if cache_key in self._image_cache:
+                    continue
+                img = _load_hyperspectral_image_or_none(_split_entry_path(path))
                 if img is None:
                     raise RuntimeError(
-                        f"Failed to preload test hyperspectral image for cache: {path}"
+                        f"Failed to preload test hyperspectral image for cache: {_format_split_entry_for_log(path)}"
                     )
-                self._image_cache[path] = img
-            print(f"✅ Cached {len(self._image_cache)} image(s) in memory.")
+                self._image_cache[cache_key] = img
+            print(f"✅ Cached {len(self._image_cache)} source image(s) in memory.")
 
         sample = None
         if self.cache_in_memory and self.image_paths:
-            sample = self._image_cache[self.image_paths[0]]
+            sample = _load_split_entry_image(self.image_paths[0], cache=self._image_cache)
         else:
             for path in self.image_paths:
-                sample = _load_hyperspectral_image_or_none(path)
+                sample = _load_split_entry_image(path)
                 if sample is not None:
                     break
         if sample is None:
@@ -748,14 +835,14 @@ class HyperspectralTestDataset(Dataset):
             Any: Output produced by this function.
         """
         image_path = self.image_paths[idx]
-        if self.cache_in_memory:
-            img = self._image_cache.get(image_path)
-        else:
-            img = _load_hyperspectral_image_or_none(image_path)
+        img = _load_split_entry_image(
+            image_path,
+            cache=self._image_cache if self.cache_in_memory else None,
+        )
         if img is None:
             bad_path = image_path
             raise RuntimeError(
-                f"Failed to load test hyperspectral image: {bad_path}. "
+                f"Failed to load test hyperspectral image: {_format_split_entry_for_log(bad_path)}. "
                 "Please verify sample path format and file integrity."
             )
 
@@ -770,4 +857,4 @@ class HyperspectralTestDataset(Dataset):
         lr = torch.from_numpy(lr.transpose(2, 0, 1))
         hr = torch.from_numpy(img.transpose(2, 0, 1))
 
-        return lr, hr, image_path
+        return lr, hr, _split_entry_id(image_path)

@@ -239,7 +239,7 @@ class Evaluator:
                     metrics = self.metrics_calculator.calculate_all(sr, hr, scale=scale)
 
                     # Add filename
-                    metrics['filename'] = os.path.basename(filepath[0])
+                    metrics['filename'] = str(filepath[0])
                     all_metrics.append(metrics)
 
                     # Save reconstructed image if requested
