@@ -9,6 +9,7 @@ Usage:
 
 import os
 import argparse
+import re
 import torch
 import numpy as np
 from torch.utils.data import DataLoader
@@ -71,6 +72,18 @@ def _save_band_pngs(cube_chw, band_dir, file_prefix):
         plt.imsave(band_path, band, cmap="gray", vmin=0.0, vmax=1.0)
 
 
+def _build_safe_sample_names(sample_id, index):
+    """Convert dataset sample identifiers into filesystem-safe names."""
+    raw_name = str(sample_id)
+    normalized = os.path.normpath(raw_name)
+    base_name = os.path.basename(normalized.rstrip(os.sep)) or raw_name
+    stem = os.path.splitext(base_name)[0] if os.path.splitext(base_name)[0] else base_name
+    safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._")
+    if not safe_stem:
+        safe_stem = f"sample_{index:04d}"
+    return raw_name, safe_stem
+
+
 def remove_dir_if_effectively_empty(path):
     """Execute `remove_dir_if_effectively_empty`.
 
@@ -121,7 +134,7 @@ def test_full_image(
     """
     model.eval()
 
-    psnr_list, ssim_list, sam_list, ergas_list = [], [], [], []
+    psnr_list, ssim_list, sam_list, ergas_list, inference_time_list = [], [], [], [], []
     results_per_image = []
 
     print("\n" + "="*70)
@@ -132,7 +145,11 @@ def test_full_image(
     pbar = tqdm(dataloader, desc='Testing')
     for idx, (lr, hr, filepath) in enumerate(pbar):
 
-        start_time = time.time()   # ⬅ bắt đầu đo thời gian
+        # Lấy LR numpy để save ảnh TRƯỚC khi move lên device
+        # (tránh vấn đề khi MPS fallback sang CPU giữa chừng)
+        lr_np_cpu = lr.squeeze(0).numpy()
+
+        start_time = time.time()   # ⬅ bắt đầu đo thời gian inference
 
         lr = lr.to(device)   # (1, C, H, W)
         hr = hr.to(device)
@@ -147,7 +164,7 @@ def test_full_image(
                 overlap=chop_overlap
             )
 
-        elapsed = time.time() - start_time   # ⬅ kết thúc đo
+        elapsed = time.time() - start_time   # ⬅ kết thúc đo inference (không bao gồm save)
 
         # Safety alignment: keep common region if shapes are not identical.
         if sr.shape[-2:] != hr.shape[-2:]:
@@ -160,13 +177,23 @@ def test_full_image(
                 f"{min_h}x{min_w}"
             )
 
+        # Store per-image results — phải gán trước crop_border warning dùng image_name
+        image_name, safe_image_stem = _build_safe_sample_names(filepath[0], idx)
+
         # Crop border (theo paper ESSA)
         if crop_border and scale > 1:
             # Crop scale pixels trên mỗi cạnh (paper-style, tránh boundary artifacts)
             # Dùng explicit index thay vì -scale để tránh off-by-one khi scale lớn
             h, w = hr.shape[-2], hr.shape[-1]
-            sr = sr[:, :, scale:h - scale, scale:w - scale]
-            hr = hr[:, :, scale:h - scale, scale:w - scale]
+            if h > 2 * scale and w > 2 * scale:
+                sr = sr[:, :, scale:h - scale, scale:w - scale]
+                hr = hr[:, :, scale:h - scale, scale:w - scale]
+            else:
+                pbar.write(
+                    f"⚠️ Skipping crop_border for '{image_name}': "
+                    f"image too small ({h}x{w}) for scale={scale} "
+                    f"(cần > {2 * scale}x{2 * scale})"
+                )
 
         # Clamp to [0, 1]   
         sr = sr.clamp(0.0, 1.0)
@@ -186,14 +213,13 @@ def test_full_image(
         ssim_list.append(ssim)
         sam_list.append(sam)
         ergas_list.append(ergas)
+        inference_time_list.append(elapsed)
 
         # Convert to numpy ONLY for saving
         sr_np = sr_tensor.numpy()
         hr_np = hr_tensor.numpy()
         
         # Store per-image results
-        image_name = str(filepath[0])
-        image_stem = os.path.splitext(image_name)[0]
         results_per_image.append({
             'image': image_name,
             'PSNR': float(psnr),
@@ -212,32 +238,36 @@ def test_full_image(
         if save_dir is not None:
             os.makedirs(save_dir, exist_ok=True)
             
-            image_save_dir = os.path.join(save_dir, image_stem)
+            image_save_dir = os.path.join(save_dir, safe_image_stem)
             os.makedirs(image_save_dir, exist_ok=True)
 
             # Save as .npy
-            save_path = os.path.join(image_save_dir, f"{image_stem}_SR.npy")
+            save_path = os.path.join(image_save_dir, f"{safe_image_stem}_SR.npy")
             np.save(save_path, sr_np)
 
             # Save RGB visualizations for SR/HR/LR.
-            _save_rgb_png(sr_np, os.path.join(image_save_dir, f"{image_stem}_SR_RGB.png"))
-            _save_rgb_png(hr_np, os.path.join(image_save_dir, f"{image_stem}_HR_RGB.png"))
-            _save_rgb_png(lr.squeeze(0).detach().cpu().numpy(), os.path.join(image_save_dir, f"{image_stem}_LR_RGB.png"))
+            _save_rgb_png(sr_np, os.path.join(image_save_dir, f"{safe_image_stem}_SR_RGB.png"))
+            _save_rgb_png(hr_np, os.path.join(image_save_dir, f"{safe_image_stem}_HR_RGB.png"))
+            _save_rgb_png(
+                lr_np_cpu,
+                os.path.join(image_save_dir, f"{safe_image_stem}_LR_RGB.png"),
+            )
 
             # Optional: save all band images as grayscale PNGs.
             if save_band_png:
                 _save_band_pngs(
                     cube_chw=hr_np,
                     band_dir=os.path.join(image_save_dir, "bands_hr"),
-                    file_prefix=f"{image_stem}_HR",
+                    file_prefix=f"{safe_image_stem}_HR",
                 )
                 _save_band_pngs(
                     cube_chw=sr_np,
                     band_dir=os.path.join(image_save_dir, "bands_sr"),
-                    file_prefix=f"{image_stem}_SR",
+                    file_prefix=f"{safe_image_stem}_SR",
                 )
 
     total_test_time = time.time() - test_start
+    total_inference_time = float(sum(inference_time_list))
 
     # Calculate average metrics
     avg_metrics = {
@@ -246,9 +276,12 @@ def test_full_image(
         "SAM": float(np.mean(sam_list)),
         "ERGAS": float(np.mean(ergas_list)),
         "num_images": len(psnr_list),
-        # total_test_time bao gồm cả save images — đây là wall-clock time, không chỉ inference
+        # Wall-clock time: bao gồm cả save images, dataloader, v.v.
         "total_test_time_sec": float(total_test_time),
-        "avg_time_per_image_sec": float(total_test_time / max(1, len(psnr_list)))
+        "avg_time_per_image_sec": float(total_test_time / max(1, len(psnr_list))),
+        # Inference-only time: chỉ tính forward pass (không bao gồm save/load)
+        "total_inference_time_sec": total_inference_time,
+        "avg_inference_time_per_image_sec": float(total_inference_time / max(1, len(psnr_list))),
     }
     
     return avg_metrics, results_per_image
@@ -505,9 +538,11 @@ def main():
         print(f"  SSIM  : {avg_metrics['SSIM']:.4f}")
         print(f"  SAM   : {avg_metrics['SAM']:.3f}°")
         print(f"  ERGAS : {avg_metrics['ERGAS']:.3f}")
-        print(f"  Test Wall-clock Time : {format_duration(avg_metrics['total_test_time_sec'])} ({avg_metrics['total_test_time_sec']:.2f} seconds) (includes save)")
-        print(f"  Avg Time / Image     : {format_duration(avg_metrics['avg_time_per_image_sec'])} ({avg_metrics['avg_time_per_image_sec']:.2f} seconds)")
-        print(f"  Total Runtime        : {format_duration(total_runtime_sec)} ({total_runtime_sec:.2f} seconds)")
+        print(f"  Test Wall-clock Time  : {format_duration(avg_metrics['total_test_time_sec'])} ({avg_metrics['total_test_time_sec']:.2f} seconds) (includes load/save)")
+        print(f"  Avg Time / Image      : {format_duration(avg_metrics['avg_time_per_image_sec'])} ({avg_metrics['avg_time_per_image_sec']:.2f} seconds) (wall-clock)")
+        print(f"  Total Inference Time  : {format_duration(avg_metrics['total_inference_time_sec'])} ({avg_metrics['total_inference_time_sec']:.2f} seconds) (forward pass only)")
+        print(f"  Avg Inference / Image : {format_duration(avg_metrics['avg_inference_time_per_image_sec'])} ({avg_metrics['avg_inference_time_per_image_sec']:.2f} seconds)")
+        print(f"  Total Runtime         : {format_duration(total_runtime_sec)} ({total_runtime_sec:.2f} seconds)")
         print("="*70)
 
         # Save results to JSON
@@ -544,9 +579,11 @@ def main():
             f.write(f"SSIM  : {avg_metrics['SSIM']:.4f}\n")
             f.write(f"SAM   : {avg_metrics['SAM']:.3f}°\n")
             f.write(f"ERGAS : {avg_metrics['ERGAS']:.3f}\n")
-            f.write(f"Test Wall-clock Time : {format_duration(avg_metrics['total_test_time_sec'])} ({avg_metrics['total_test_time_sec']:.2f} seconds) (includes save)\n")
-            f.write(f"Avg Time / Image     : {format_duration(avg_metrics['avg_time_per_image_sec'])} ({avg_metrics['avg_time_per_image_sec']:.2f} seconds)\n")
-            f.write(f"Total Runtime        : {format_duration(total_runtime_sec)} ({total_runtime_sec:.2f} seconds)\n")
+            f.write(f"Test Wall-clock Time  : {format_duration(avg_metrics['total_test_time_sec'])} ({avg_metrics['total_test_time_sec']:.2f} seconds) (includes load/save)\n")
+            f.write(f"Avg Time / Image      : {format_duration(avg_metrics['avg_time_per_image_sec'])} ({avg_metrics['avg_time_per_image_sec']:.2f} seconds) (wall-clock)\n")
+            f.write(f"Total Inference Time  : {format_duration(avg_metrics['total_inference_time_sec'])} ({avg_metrics['total_inference_time_sec']:.2f} seconds) (forward pass only)\n")
+            f.write(f"Avg Inference / Image : {format_duration(avg_metrics['avg_inference_time_per_image_sec'])} ({avg_metrics['avg_inference_time_per_image_sec']:.2f} seconds)\n")
+            f.write(f"Total Runtime         : {format_duration(total_runtime_sec)} ({total_runtime_sec:.2f} seconds)\n")
             f.write("="*70 + "\n\n")
             f.write("Per-image results:\n")
             f.write("-"*70 + "\n")
