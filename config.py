@@ -548,7 +548,7 @@ class ConfigChikusei(_ConfigDatasetBase):
     def _apply_subclass_profile(self):
         super()._apply_subclass_profile()
         self.regenerate_split = False  # Set False sau lần tạo split đầu tiên
-        self.cache_in_memory = True
+        self.cache_in_memory = False
 
 
 class ConfigPavia(_ConfigDatasetBase):
@@ -563,7 +563,7 @@ class ConfigPavia(_ConfigDatasetBase):
     def _apply_subclass_profile(self):
         super()._apply_subclass_profile()
         self.regenerate_split = False  # Set False sau lần tạo split đầu tiên
-        self.cache_in_memory = True
+        self.cache_in_memory = False
 
 
 
