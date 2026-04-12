@@ -457,7 +457,7 @@ class ConfigUniversalBest(ConfigSpecTrans):
             self.num_epochs = 1000  # Same epoch budget for all datasets.
             self.patch_size = 64  # HR patch size.
             self.batch_size = 1  # Memory-safe default.
-            self.num_workers = 0  # Avoid dataloader overhead for single file.
+            self.num_workers = 2  # Avoid dataloader overhead for single file.
             self.ema_decay = 0.9995  # Stronger smoothing for noisy validation curves.
         else:
             # Multi-scene datasets (CAVE, Harvard)
@@ -548,7 +548,7 @@ class ConfigChikusei(_ConfigDatasetBase):
     def _apply_subclass_profile(self):
         super()._apply_subclass_profile()
         self.regenerate_split = False  # Set False sau lần tạo split đầu tiên
-        self.cache_in_memory = False
+        self.cache_in_memory = True
 
 
 class ConfigPavia(_ConfigDatasetBase):
@@ -563,7 +563,7 @@ class ConfigPavia(_ConfigDatasetBase):
     def _apply_subclass_profile(self):
         super()._apply_subclass_profile()
         self.regenerate_split = False  # Set False sau lần tạo split đầu tiên
-        self.cache_in_memory = False
+        self.cache_in_memory = True
 
 
 
