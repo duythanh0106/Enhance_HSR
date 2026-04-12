@@ -409,28 +409,50 @@ class Trainer:
             force_regenerate_split=self.config.regenerate_split,
         )
 
+        # Dùng 'trainval' nếu val_ratio=0 hoặc config set use_trainval=True
+        use_trainval = (
+            getattr(self.config, 'use_trainval', False)
+            or float(self.config.val_ratio) == 0.0
+        )
+        train_split = 'trainval' if use_trainval else 'train'
+
         train_dataset = HyperspectralDataset(
             data_root=self.config.data_root,
             patch_size=self.config.patch_size,
             augment=self.config.use_augmentation,
-            split='train',
+            split=train_split,
             virtual_samples_per_epoch=self.config.train_virtual_samples_per_epoch,
             cache_in_memory=bool(getattr(self.config, 'cache_in_memory', False)),
             **split_kwargs
         )
 
-        val_dataset, _ = load_dataset_with_fallback(
-            dataset_cls=HyperspectralDataset,
-            primary_split='val',
-            fallback_split='train',
-            log_fn=self._log,
-            data_root=self.config.data_root,
-            patch_size=self.config.patch_size,
-            augment=False,
-            virtual_samples_per_epoch=self.config.val_virtual_samples_per_epoch,
-            cache_in_memory=bool(getattr(self.config, 'cache_in_memory', False)),
-            **split_kwargs,
-        )
+        if use_trainval:
+            # Không có val set riêng — dùng lại train set để monitor
+            self._log("INFO: val_ratio=0 hoac use_trainval=True -> dung train set de validate.")
+            val_dataset = HyperspectralDataset(
+                data_root=self.config.data_root,
+                patch_size=self.config.patch_size,
+                augment=False,
+                split=train_split,
+                virtual_samples_per_epoch=min(
+                    50, self.config.val_virtual_samples_per_epoch or 50
+                ),
+                cache_in_memory=bool(getattr(self.config, 'cache_in_memory', False)),
+                **split_kwargs,
+            )
+        else:
+            val_dataset, _ = load_dataset_with_fallback(
+                dataset_cls=HyperspectralDataset,
+                primary_split='val',
+                fallback_split='train',
+                log_fn=self._log,
+                data_root=self.config.data_root,
+                patch_size=self.config.patch_size,
+                augment=False,
+                virtual_samples_per_epoch=self.config.val_virtual_samples_per_epoch,
+                cache_in_memory=bool(getattr(self.config, 'cache_in_memory', False)),
+                **split_kwargs,
+            )
 
         # Sync config with detected number of spectral bands
         if self.config.num_spectral_bands != train_dataset.num_bands:
