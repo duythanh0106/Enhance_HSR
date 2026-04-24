@@ -510,6 +510,14 @@ class Trainer:
         Returns:
             Any: Output produced by this function.
         """
+        previous_optimizer_state = None
+        previous_optimizer = getattr(self, 'optimizer', None)
+        if previous_optimizer is not None:
+            try:
+                previous_optimizer_state = previous_optimizer.state_dict()
+            except Exception:
+                previous_optimizer_state = None
+
         if self.config.optimizer.lower() == 'adam':
             optimizer = optim.Adam(
                 self.model.parameters(),
@@ -526,6 +534,13 @@ class Trainer:
             )
         else:
             raise ValueError(f"Unknown optimizer: {self.config.optimizer}")
+
+        if previous_optimizer_state is not None:
+            try:
+                optimizer.load_state_dict(previous_optimizer_state)
+                self._log("Restored optimizer state after rebuild.")
+            except Exception as exc:
+                self._log(f"⚠️ Failed to restore optimizer state after rebuild: {exc}")
         
         return optimizer
     
@@ -538,6 +553,17 @@ class Trainer:
         Returns:
             Any: Output produced by this function.
         """
+        previous_scheduler_state = None
+        previous_scheduler_type = None
+        previous_scheduler = getattr(self, 'scheduler', None)
+        if previous_scheduler is not None:
+            try:
+                previous_scheduler_state = previous_scheduler.state_dict()
+                previous_scheduler_type = type(previous_scheduler)
+            except Exception:
+                previous_scheduler_state = None
+                previous_scheduler_type = None
+
         if self.config.lr_scheduler == 'cosine':
             scheduler = optim.lr_scheduler.CosineAnnealingLR(
                 self.optimizer,
@@ -559,6 +585,17 @@ class Trainer:
             )
         else:
             scheduler = None
+
+        if (
+            scheduler is not None
+            and previous_scheduler_state is not None
+            and previous_scheduler_type is type(scheduler)
+        ):
+            try:
+                scheduler.load_state_dict(previous_scheduler_state)
+                self._log("Restored scheduler state after rebuild.")
+            except Exception as exc:
+                self._log(f"⚠️ Failed to restore scheduler state after rebuild: {exc}")
         
         return scheduler
     
