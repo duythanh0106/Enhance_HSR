@@ -355,6 +355,17 @@ def main():
     )
     parser.add_argument('--output_dir', type=str, default='./test_results',
                        help='Output directory for results')
+    parser.add_argument(
+        '--split_seed',
+        type=int,
+        default=None,
+        help='Override split seed used to read/generate split.json'
+    )
+    parser.add_argument(
+        '--regenerate_split',
+        action='store_true',
+        help='Force regenerate split.json before loading test split'
+    )
     
     args = parser.parse_args()
     if args.chop_patch_size <= 0:
@@ -399,13 +410,18 @@ def main():
     print(f"Using device: {device}")
     
     upscale = config.get('upscale_factor', 4)
+    effective_split_seed = int(args.split_seed) if args.split_seed is not None else int(config.get('split_seed', 42))
+    effective_regenerate_split = bool(config.get('regenerate_split', False)) or bool(args.regenerate_split)
+    config['split_seed'] = effective_split_seed
+    config['regenerate_split'] = effective_regenerate_split
+
     split_kwargs = build_split_kwargs(
         upscale=upscale,
-        split_seed=config.get('split_seed', 42),
+        split_seed=effective_split_seed,
         train_ratio=config.get('train_ratio', 0.8),
         val_ratio=config.get('val_ratio', 0.1),
         test_ratio=config.get('test_ratio', 0.1),
-        force_regenerate_split=config.get('regenerate_split', False),
+        force_regenerate_split=effective_regenerate_split,
     )
     
     # Print test info
@@ -421,6 +437,10 @@ def main():
     print(f"Crop border: {args.crop_border}")
     print(f"Save images: {args.save_images}")
     print(f"Save band PNG: {args.save_band_png}")
+    split_seed_note = " (CLI override)" if args.split_seed is not None else ""
+    regenerate_note = " (CLI override)" if args.regenerate_split else ""
+    print(f"Split seed: {effective_split_seed}{split_seed_note}")
+    print(f"Regenerate split: {effective_regenerate_split}{regenerate_note}")
     print("="*70)
     
     test_dataset, _ = load_dataset_with_fallback(
@@ -486,11 +506,17 @@ def main():
     print(f"\nModel parameters: {num_params:,}")
     print("✅ Model loaded successfully")
     
-    # Create output directory
+    # Create output directory (same naming style as checkpoints)
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    output_dir = os.path.join(args.output_dir, f'test_{timestamp}')
+    model_name = str(config.get('model_name', 'model'))
+    dataset_tag = infer_dataset_name(args.data_root)
+    safe_model = re.sub(r"[^A-Za-z0-9._-]+", "_", model_name).strip("._") or "model"
+    safe_dataset = re.sub(r"[^A-Za-z0-9._-]+", "_", dataset_tag).strip("._") or "dataset"
+    test_experiment_name = f"{safe_model}_{safe_dataset}_x{upscale}_{timestamp}"
+    output_dir = os.path.join(args.output_dir, test_experiment_name)
     
     save_dir = os.path.join(output_dir, 'images') if args.save_images else None
+    print(f"Test experiment: {test_experiment_name}")
     try:
         # Run test
         try:
