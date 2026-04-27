@@ -106,7 +106,8 @@ class SAMLoss(nn.Module):
         
         # Calculate cosine
         cos_theta = dot_product / (norm_pred * norm_target + self.eps)
-        cos_theta = torch.clamp(cos_theta, -1.0, 1.0)
+        # Keep acos gradient finite near boundaries.
+        cos_theta = torch.clamp(cos_theta, -1.0 + 1e-7, 1.0 - 1e-7)
         
         # Calculate angle (in radians)
         sam = torch.acos(cos_theta)

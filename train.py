@@ -415,6 +415,8 @@ class Trainer:
             or float(self.config.val_ratio) == 0.0
         )
         train_split = 'trainval' if use_trainval else 'train'
+        normalization_mode = getattr(self.config, 'normalization_mode', 'per_image_minmax')
+        normalization_scale = float(getattr(self.config, 'normalization_scale', 65535.0))
 
         train_dataset = HyperspectralDataset(
             data_root=self.config.data_root,
@@ -423,6 +425,8 @@ class Trainer:
             split=train_split,
             virtual_samples_per_epoch=self.config.train_virtual_samples_per_epoch,
             cache_in_memory=bool(getattr(self.config, 'cache_in_memory', False)),
+            normalization_mode=normalization_mode,
+            normalization_scale=normalization_scale,
             **split_kwargs
         )
 
@@ -438,6 +442,8 @@ class Trainer:
                     50, self.config.val_virtual_samples_per_epoch or 50
                 ),
                 cache_in_memory=bool(getattr(self.config, 'cache_in_memory', False)),
+                normalization_mode=normalization_mode,
+                normalization_scale=normalization_scale,
                 **split_kwargs,
             )
         else:
@@ -451,6 +457,8 @@ class Trainer:
                 augment=False,
                 virtual_samples_per_epoch=self.config.val_virtual_samples_per_epoch,
                 cache_in_memory=bool(getattr(self.config, 'cache_in_memory', False)),
+                normalization_mode=normalization_mode,
+                normalization_scale=normalization_scale,
                 **split_kwargs,
             )
 
@@ -748,7 +756,11 @@ class Trainer:
         self.model.train()
         epoch_loss = 0.0
         
-        pbar = tqdm(self.train_loader, desc=f'Epoch {epoch}/{self.config.num_epochs}')
+        pbar = tqdm(
+            self.train_loader,
+            desc=f'Epoch {epoch}/{self.config.num_epochs}',
+            disable=bool(getattr(self.config, 'quiet_tqdm', False)),
+        )
         
         for i, (lr, hr) in enumerate(pbar):
             lr = lr.to(self.device, non_blocking=self.device.type == 'cuda')
@@ -777,6 +789,9 @@ class Trainer:
             
             # Backward pass
             if self.use_amp:
+                if not torch.isfinite(loss):
+                    self.optimizer.zero_grad(set_to_none=True)
+                    continue
                 self.scaler.scale(loss).backward()
                 if self.config.gradient_clip_norm and self.config.gradient_clip_norm > 0:
                     self.scaler.unscale_(self.optimizer)
@@ -787,6 +802,9 @@ class Trainer:
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
+                if not torch.isfinite(loss):
+                    self.optimizer.zero_grad(set_to_none=True)
+                    continue
                 loss.backward()
                 if self.config.gradient_clip_norm and self.config.gradient_clip_norm > 0:
                     torch.nn.utils.clip_grad_norm_(
@@ -824,7 +842,11 @@ class Trainer:
             total_ergas = 0.0
             
             with torch.no_grad():
-                for lr, hr in tqdm(self.val_loader, desc='Validating'):
+                for lr, hr in tqdm(
+                    self.val_loader,
+                    desc='Validating',
+                    disable=bool(getattr(self.config, 'quiet_tqdm', False)),
+                ):
                     lr = lr.to(self.device, non_blocking=self.device.type == 'cuda')
                     hr = hr.to(self.device, non_blocking=self.device.type == 'cuda')
 

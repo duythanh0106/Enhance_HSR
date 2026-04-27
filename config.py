@@ -48,6 +48,10 @@ class Config:
         self.test_ratio = 0.1  # Fraction of files assigned to test split.
         self.regenerate_split = False  # If True, force re-create split.json using seed and ratios above.
         self.cache_in_memory = False  # Cache loaded hyperspectral cubes in RAM to reduce repeated disk I/O.
+        # Normalization strategy for all train/val/test samples.
+        # Modes: 'per_image_minmax' (legacy), 'global_fixed' (paper-style fixed sensor scale).
+        self.normalization_mode = 'per_image_minmax'
+        self.normalization_scale = 65535.0
         
         # ============================================================
         # MODEL SETTINGS
@@ -210,6 +214,7 @@ class Config:
         print(f"  Split Ratio (train/val/test): {self.train_ratio}/{self.val_ratio}/{self.test_ratio}")
         print(f"  Regenerate Split: {self.regenerate_split}")
         print(f"  Cache In Memory: {self.cache_in_memory}")
+        print(f"  Normalization: {self.normalization_mode} (scale={self.normalization_scale})")
         
         print("\n🏗️  Model Settings:")
         print(f"  Model: {self.model_name}")
@@ -549,6 +554,8 @@ class ConfigChikusei(_ConfigDatasetBase):
         super()._apply_subclass_profile()
         self.regenerate_split = False  # Set False sau lần tạo split đầu tiên
         self.cache_in_memory = False
+        self.normalization_mode = 'global_fixed'
+        self.normalization_scale = 4095.0  # Chikusei raw data is typically 12-bit.
 
 
 class ConfigPavia(_ConfigDatasetBase):
@@ -565,6 +572,8 @@ class ConfigPavia(_ConfigDatasetBase):
         self.regenerate_split = False  # Split đã tạo, không regenerate
         self.cache_in_memory = False
         self.use_trainval = True  # Gộp val vào train vì val chỉ có 1 patch
+        self.normalization_mode = 'global_fixed'
+        self.normalization_scale = 4095.0  # Pavia raw data is typically 12-bit.
 
 
 

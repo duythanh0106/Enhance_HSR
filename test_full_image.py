@@ -412,8 +412,12 @@ def main():
     upscale = config.get('upscale_factor', 4)
     effective_split_seed = int(args.split_seed) if args.split_seed is not None else int(config.get('split_seed', 42))
     effective_regenerate_split = bool(config.get('regenerate_split', False)) or bool(args.regenerate_split)
+    effective_normalization_mode = str(config.get('normalization_mode', 'per_image_minmax'))
+    effective_normalization_scale = float(config.get('normalization_scale', 65535.0))
     config['split_seed'] = effective_split_seed
     config['regenerate_split'] = effective_regenerate_split
+    config['normalization_mode'] = effective_normalization_mode
+    config['normalization_scale'] = effective_normalization_scale
 
     split_kwargs = build_split_kwargs(
         upscale=upscale,
@@ -441,6 +445,10 @@ def main():
     regenerate_note = " (CLI override)" if args.regenerate_split else ""
     print(f"Split seed: {effective_split_seed}{split_seed_note}")
     print(f"Regenerate split: {effective_regenerate_split}{regenerate_note}")
+    print(
+        f"Normalization: {effective_normalization_mode} "
+        f"(scale={effective_normalization_scale})"
+    )
     print("="*70)
     
     test_dataset, _ = load_dataset_with_fallback(
@@ -449,6 +457,8 @@ def main():
         fallback_split='train',
         data_root=args.data_root,
         log_fn=print,
+        normalization_mode=effective_normalization_mode,
+        normalization_scale=effective_normalization_scale,
         **split_kwargs,
     )
 

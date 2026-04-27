@@ -49,21 +49,26 @@ def calculate_ssim(img1, img2, window_size=11, data_range=1.0):
     if img1.dim() == 3:
         img1 = img1.unsqueeze(0)
         img2 = img2.unsqueeze(0)
+    # AMP-safe: compute SSIM in float32.
+    img1 = img1.float()
+    img2 = img2.float()
     
     C1 = (0.01 * data_range) ** 2
     C2 = (0.03 * data_range) ** 2
     
     # Create Gaussian window
     sigma = 1.5
-    gauss = torch.Tensor([math.exp(-(x - window_size//2)**2 / (2*sigma**2)) 
-                          for x in range(window_size)])
+    gauss = torch.tensor(
+        [math.exp(-(x - window_size//2)**2 / (2*sigma**2)) for x in range(window_size)],
+        dtype=img1.dtype,
+        device=img1.device,
+    )
     gauss = gauss / gauss.sum()
     
     # Create 2D Gaussian kernel
     _1D_window = gauss.unsqueeze(1)
-    _2D_window = _1D_window.mm(_1D_window.t()).float().unsqueeze(0).unsqueeze(0)
+    _2D_window = _1D_window.mm(_1D_window.t()).unsqueeze(0).unsqueeze(0)
     window = _2D_window.expand(img1.size(1), 1, window_size, window_size).contiguous()
-    window = window.to(img1.device)
     
     # Calculate means
     mu1 = F.conv2d(img1, window, padding=window_size//2, groups=img1.size(1))
@@ -114,7 +119,8 @@ def calculate_sam(img1, img2, eps=1e-8):
     
     # Calculate cosine similarity
     cos_theta = dot_product / (norm1 * norm2 + eps)
-    cos_theta = torch.clamp(cos_theta, -1.0, 1.0)
+    # Keep acos gradient finite near boundaries.
+    cos_theta = torch.clamp(cos_theta, -1.0 + 1e-7, 1.0 - 1e-7)
     
     # Calculate angle in radians, then convert to degrees
     sam_rad = torch.acos(cos_theta)
@@ -195,6 +201,8 @@ class MetricsCalculator:
         metrics = {}
         
         with torch.no_grad():
+            pred = pred.float()
+            target = target.float()
             metrics['PSNR'] = calculate_psnr(pred, target, self.data_range)
             metrics['SSIM'] = calculate_ssim(pred, target, data_range=self.data_range)
             metrics['SAM'] = calculate_sam(pred, target)

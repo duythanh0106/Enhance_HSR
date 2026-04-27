@@ -212,19 +212,32 @@ def load_hyperspectral_image(path):
     return img.astype(np.float32)
 
 
-def normalize_image(img):
-    """Execute `normalize_image`.
+def normalize_image(img, mode='per_image_minmax', global_scale=65535.0):
+    """Normalize hyperspectral cube with configurable strategy.
 
-    Args:
-        img: Input parameter `img`.
-
-    Returns:
-        Any: Output produced by this function.
+    Supported modes:
+      - `per_image_minmax`: normalize each sample by its own min/max (legacy behavior)
+      - `global_fixed`: normalize by fixed sensor scale (e.g. 4095 or 65535)
     """
-    img_min, img_max = img.min(), img.max()
-    if img_max - img_min > 0:
-        img = (img - img_min) / (img_max - img_min)
-    return img
+    img = np.asarray(img, dtype=np.float32)
+    norm_mode = str(mode or 'per_image_minmax').lower()
+
+    if norm_mode in {'per_image_minmax', 'minmax'}:
+        img_min, img_max = img.min(), img.max()
+        if img_max - img_min > 0:
+            img = (img - img_min) / (img_max - img_min)
+        return img
+
+    if norm_mode in {'global_fixed', 'fixed'}:
+        scale = float(global_scale)
+        if scale <= 0:
+            raise ValueError(f"global_scale must be > 0 for global_fixed mode, got {global_scale}")
+        # Do not divide twice when source data is already in [0, 1].
+        if img.max() > 1.0:
+            img = img / scale
+        return img.clip(0.0, 1.0)
+
+    raise ValueError(f"Unsupported normalization mode: {mode}")
 
 
 def build_split_kwargs(upscale=4, split_seed=42, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1,
@@ -496,7 +509,8 @@ class HyperspectralDataset(Dataset):
                  upscale=4, augment=True, split='train',
                  split_seed=42, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1,
                  force_regenerate_split=False, virtual_samples_per_epoch=0,
-                 cache_in_memory=False):
+                 cache_in_memory=False, normalization_mode='per_image_minmax',
+                 normalization_scale=65535.0):
 
         """Initialize the `HyperspectralDataset` instance.
 
@@ -513,6 +527,8 @@ class HyperspectralDataset(Dataset):
             force_regenerate_split: Input parameter `force_regenerate_split`.
             virtual_samples_per_epoch: Input parameter `virtual_samples_per_epoch`.
             cache_in_memory: Input parameter `cache_in_memory`.
+            normalization_mode: Input parameter `normalization_mode`.
+            normalization_scale: Input parameter `normalization_scale`.
 
         Returns:
             None: This method initializes state and returns no value.
@@ -529,6 +545,8 @@ class HyperspectralDataset(Dataset):
         self.force_regenerate_split = force_regenerate_split
         self.virtual_samples_per_epoch = max(0, int(virtual_samples_per_epoch or 0))
         self.cache_in_memory = bool(cache_in_memory)
+        self.normalization_mode = str(normalization_mode or 'per_image_minmax')
+        self.normalization_scale = float(normalization_scale)
         self._image_cache = {}
 
         # --------------------------------------------------
@@ -602,7 +620,11 @@ class HyperspectralDataset(Dataset):
         Returns:
             Any: Output produced by this function.
         """
-        return normalize_image(img)
+        return normalize_image(
+            img,
+            mode=self.normalization_mode,
+            global_scale=self.normalization_scale,
+        )
 
     # ------------------------------------------------------
 
@@ -734,7 +756,8 @@ class HyperspectralTestDataset(Dataset):
 
     def __init__(self, data_root, split='test', upscale=4,
                  split_seed=42, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1,
-                 force_regenerate_split=False, cache_in_memory=False):
+                 force_regenerate_split=False, cache_in_memory=False,
+                 normalization_mode='per_image_minmax', normalization_scale=65535.0):
 
         """Initialize the `HyperspectralTestDataset` instance.
 
@@ -748,6 +771,8 @@ class HyperspectralTestDataset(Dataset):
             test_ratio: Input parameter `test_ratio`.
             force_regenerate_split: Input parameter `force_regenerate_split`.
             cache_in_memory: Input parameter `cache_in_memory`.
+            normalization_mode: Input parameter `normalization_mode`.
+            normalization_scale: Input parameter `normalization_scale`.
 
         Returns:
             None: This method initializes state and returns no value.
@@ -761,6 +786,8 @@ class HyperspectralTestDataset(Dataset):
         self.test_ratio = test_ratio
         self.force_regenerate_split = force_regenerate_split
         self.cache_in_memory = bool(cache_in_memory)
+        self.normalization_mode = str(normalization_mode or 'per_image_minmax')
+        self.normalization_scale = float(normalization_scale)
         self._image_cache = {}
 
         split_file = os.path.join(data_root, "split.json")
@@ -846,7 +873,11 @@ class HyperspectralTestDataset(Dataset):
                 "Please verify sample path format and file integrity."
             )
 
-        img = normalize_image(img)
+        img = normalize_image(
+            img,
+            mode=self.normalization_mode,
+            global_scale=self.normalization_scale,
+        )
         lr = downsample_bicubic(img, self.upscale)
         # Trim HR to match LR exactly — downsample_bicubic truncates
         # pixels not divisible by upscale before resizing.
