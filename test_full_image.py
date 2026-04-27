@@ -27,6 +27,43 @@ from utils.device import resolve_device
 from utils.time_utils import format_duration
 
 
+def _auto_enable_regenerate_for_single_scene(data_root, dataset_name):
+    """Auto-fix stale split.json for single-scene protocols (Chikusei/Pavia)."""
+    dataset_key = str(dataset_name or "").lower()
+    if "chikusei" in dataset_key:
+        expected_protocol = "single_scene_non_overlapping_patches"
+    elif "pavia" in dataset_key:
+        expected_protocol = "single_scene_non_overlapping_strips"
+    else:
+        return False, ""
+
+    split_path = os.path.join(data_root, "split.json")
+    if not os.path.exists(split_path):
+        return False, ""
+
+    try:
+        with open(split_path, "r") as f:
+            split_data = json.load(f)
+    except Exception as exc:
+        return True, f"split.json unreadable ({exc})"
+
+    if not isinstance(split_data, dict):
+        return True, "split.json has invalid format"
+
+    protocol = split_data.get("protocol") or {}
+    protocol_type = protocol.get("type")
+    test_entries = split_data.get("test", [])
+
+    if protocol_type != expected_protocol:
+        return True, (
+            f"protocol mismatch (found={protocol_type}, expected={expected_protocol})"
+        )
+    if not isinstance(test_entries, list) or len(test_entries) == 0:
+        return True, "test split is empty"
+
+    return False, ""
+
+
 def _choose_rgb_band_indices(num_bands):
     """Select representative band indices for RGB visualization."""
     if num_bands >= 31:
@@ -412,6 +449,13 @@ def main():
     upscale = config.get('upscale_factor', 4)
     effective_split_seed = int(args.split_seed) if args.split_seed is not None else int(config.get('split_seed', 42))
     effective_regenerate_split = bool(config.get('regenerate_split', False)) or bool(args.regenerate_split)
+    auto_regen, auto_reason = _auto_enable_regenerate_for_single_scene(
+        data_root=args.data_root,
+        dataset_name=dataset_name,
+    )
+    if not effective_regenerate_split and auto_regen:
+        effective_regenerate_split = True
+        print(f"Auto enable regenerate_split: {auto_reason}")
     effective_normalization_mode = str(config.get('normalization_mode', 'per_image_minmax'))
     effective_normalization_scale = float(config.get('normalization_scale', 65535.0))
     config['split_seed'] = effective_split_seed
@@ -454,7 +498,7 @@ def main():
     test_dataset, _ = load_dataset_with_fallback(
         dataset_cls=HyperspectralTestDataset,
         primary_split='test',
-        fallback_split='train',
+        fallback_split=None,
         data_root=args.data_root,
         log_fn=print,
         normalization_mode=effective_normalization_mode,
