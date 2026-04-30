@@ -1,14 +1,20 @@
-"""Time formatting helpers."""
+"""
+Time formatting helpers — chuyển elapsed seconds thành human-readable string.
+
+Dùng để hiển thị epoch time, ETA và tổng thời gian training trong train.py
+và seed_sweep.py.
+"""
 
 
 def format_duration(seconds):
-    """Execute `format_duration`.
+    """Chuyển đổi số giây thành chuỗi HH:MM:SS hoặc MM:SS.
 
     Args:
-        seconds: Input parameter `seconds`.
+        seconds: Số giây (float hoặc int); giá trị âm được treat as 0.
 
     Returns:
-        Any: Output produced by this function.
+        str: Dạng "HH:MM:SS" nếu >= 1 giờ, ngược lại "MM:SS".
+             Ví dụ: 3661 → "01:01:01", 125 → "02:05".
     """
     total = int(max(0.0, float(seconds)))
     h, rem = divmod(total, 3600)

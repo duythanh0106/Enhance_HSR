@@ -1,6 +1,14 @@
 """
-Evaluation Script for Hyperspectral Super-Resolution
-Dùng để test model và tính metrics trên test set
+Evaluation script cho Hyperspectral Super-Resolution — tính PSNR/SSIM/SAM/ERGAS trên test set.
+
+Chạy: python evaluate.py --checkpoint ./checkpoints/best.pth --data_root ./data/CAVE
+      python evaluate.py --checkpoint ckpt1.pth --compare ckpt2.pth --data_root ./data/CAVE
+
+QUAN TRỌNG:
+  - Dùng forward_chop (sliding-window) để xử lý ảnh lớn hơn GPU memory
+  - --crop_border (default): bỏ scale pixels viền — chuẩn paper-style evaluation
+  - Kết quả lưu vào ./results/<experiment_name>/evaluation_results.json + summary.txt
+  - MPS runtime error được catch và tự động fallback sang CPU
 """
 
 import os
@@ -23,22 +31,19 @@ from utils.device import resolve_device
 class Evaluator:
     """Evaluator class để đánh giá model"""
     
-    def __init__(self, checkpoint_path, data_root, 
+    def __init__(self, checkpoint_path, data_root,
                  save_results=True, save_images=True,
                  crop_border=True, chop_patch_size=32, chop_overlap=8):
-        """Initialize the `Evaluator` instance.
+        """Khởi tạo Evaluator — load checkpoint, build dataset và model.
 
         Args:
-            checkpoint_path: Input parameter `checkpoint_path`.
-            data_root: Input parameter `data_root`.
-            save_results: Input parameter `save_results`.
-            save_images: Input parameter `save_images`.
-            crop_border: Input parameter `crop_border`.
-            chop_patch_size: Input parameter `chop_patch_size`.
-            chop_overlap: Input parameter `chop_overlap`.
-
-        Returns:
-            None: This method initializes state and returns no value.
+            checkpoint_path: Đường dẫn tới file .pth checkpoint.
+            data_root: Thư mục chứa test data và split.json.
+            save_results: True để lưu JSON + TXT kết quả (mặc định True).
+            save_images: True để lưu SR images dưới dạng .npy + RGB PNG.
+            crop_border: True để bỏ scale pixels viền (paper-style evaluation).
+            chop_patch_size: Kích thước LR patch cho sliding-window inference (mặc định 32).
+            chop_overlap: Overlap giữa các patches (mặc định 8).
         """
         self.checkpoint_path = checkpoint_path
         self.data_root = data_root
@@ -87,14 +92,7 @@ class Evaluator:
 
     @staticmethod
     def _remove_dir_if_effectively_empty(path):
-        """Internal helper for `remove_dir_if_effectively_empty` operations.
-
-        Args:
-            path: Input parameter `path`.
-
-        Returns:
-            None: This function returns no value.
-        """
+        """Xóa thư mục path nếu rỗng (bỏ qua .DS_Store)."""
         if not os.path.isdir(path):
             return
         entries = [e for e in os.listdir(path) if e != '.DS_Store']
@@ -105,25 +103,11 @@ class Evaluator:
             os.rmdir(path)
 
     def cleanup_empty_results_dir(self):
-        """Execute `cleanup_empty_results_dir`.
-
-        Args:
-            None.
-
-        Returns:
-            None: This function returns no value.
-        """
+        """Xóa results_dir nếu rỗng — gọi khi evaluation bị interrupt."""
         self._remove_dir_if_effectively_empty(self.results_dir)
     
     def build_model(self):
-        """Execute `build_model`.
-
-        Args:
-            None.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Build và di chuyển model lên device từ config trong checkpoint."""
         model_name = self.config.get('model_name', 'ESSA_SSAM')
         num_bands = getattr(self, 'num_bands_detected', self.config.get('num_spectral_bands', 31))
         model = build_model_from_config(self.config, num_bands_override=num_bands)
@@ -136,14 +120,7 @@ class Evaluator:
         return model
     
     def build_dataloader(self):
-        """Execute `build_dataloader`.
-
-        Args:
-            None.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Build test DataLoader từ data_root; tự detect num_bands và validate vs checkpoint."""
         split_kwargs = build_split_kwargs(
             upscale=self.config.get('upscale_factor', 4),
             split_seed=self.config.get('split_seed', 42),
@@ -194,13 +171,10 @@ class Evaluator:
         return test_loader
     
     def evaluate(self):
-        """Execute `evaluate`.
-
-        Args:
-            None.
+        """Chạy evaluation trên toàn test set, tính và lưu metrics.
 
         Returns:
-            Any: Output produced by this function.
+            tuple: (avg_metrics dict, all_metrics list of per-image dicts).
         """
         print("\n" + "="*70)
         print("Starting Evaluation")
@@ -278,13 +252,13 @@ class Evaluator:
         return avg_metrics, all_metrics
     
     def calculate_average_metrics(self, all_metrics):
-        """Execute `calculate_average_metrics`.
+        """Tính trung bình PSNR/SSIM/SAM/ERGAS từ list per-image metrics.
 
         Args:
-            all_metrics: Input parameter `all_metrics`.
+            all_metrics: List dicts với keys PSNR/SSIM/SAM/ERGAS.
 
         Returns:
-            Any: Output produced by this function.
+            dict: Trung bình PSNR/SSIM/SAM/ERGAS.
         """
         avg_metrics = {
             'PSNR': np.mean([m['PSNR'] for m in all_metrics]),
@@ -295,15 +269,7 @@ class Evaluator:
         return avg_metrics
     
     def print_summary(self, avg_metrics, all_metrics):
-        """Execute `print_summary`.
-
-        Args:
-            avg_metrics: Input parameter `avg_metrics`.
-            all_metrics: Input parameter `all_metrics`.
-
-        Returns:
-            None: This function returns no value.
-        """
+        """In tóm tắt evaluation ra console — số ảnh và trung bình 4 metrics."""
         print("\n" + "="*70)
         print("EVALUATION SUMMARY")
         print("="*70)
@@ -316,14 +282,14 @@ class Evaluator:
         print("="*70)
     
     def save_results_json(self, avg_metrics, all_metrics):
-        """Execute `save_results_json`.
+        """Lưu kết quả evaluation ra file JSON trong results_dir.
 
         Args:
-            avg_metrics: Input parameter `avg_metrics`.
-            all_metrics: Input parameter `all_metrics`.
+            avg_metrics: Dict các metrics trung bình (PSNR, SSIM, SAM, ERGAS).
+            all_metrics: List dict metrics từng ảnh.
 
         Returns:
-            None: This function returns no value.
+            None: Ghi file evaluation_results.json, in đường dẫn ra console.
         """
         os.makedirs(self.results_dir, exist_ok=True)
         results = {
@@ -341,15 +307,7 @@ class Evaluator:
         print(f"\n✅ Results saved to: {json_path}")
 
     def save_summary_txt(self, avg_metrics, all_metrics):
-        """Execute `save_summary_txt`.
-
-        Args:
-            avg_metrics: Input parameter `avg_metrics`.
-            all_metrics: Input parameter `all_metrics`.
-
-        Returns:
-            None: This function returns no value.
-        """
+        """Lưu tóm tắt evaluation ra file TXT trong results_dir."""
         os.makedirs(self.results_dir, exist_ok=True)
         summary_path = os.path.join(self.results_dir, 'summary.txt')
         with open(summary_path, 'w', encoding='utf-8') as f:
@@ -379,16 +337,7 @@ class Evaluator:
         print(f"✅ Summary saved to: {summary_path}")
     
     def save_image(self, sr_image, filename, idx):
-        """Execute `save_image`.
-
-        Args:
-            sr_image: Input parameter `sr_image`.
-            filename: Input parameter `filename`.
-            idx: Input parameter `idx`.
-
-        Returns:
-            None: This function returns no value.
-        """
+        """Lưu SR image dưới dạng .npy và RGB PNG (bands 25/15/5) vào results_dir."""
         # Convert to numpy
         sr_np = sr_image.cpu().numpy()  # [C, H, W]
         os.makedirs(self.results_dir, exist_ok=True)
@@ -421,15 +370,12 @@ class Evaluator:
 
 
 def compare_models(checkpoint1, checkpoint2, data_root):
-    """Execute `compare_models`.
+    """Evaluate và so sánh hai checkpoint trên cùng test set.
 
     Args:
-        checkpoint1: Input parameter `checkpoint1`.
-        checkpoint2: Input parameter `checkpoint2`.
-        data_root: Input parameter `data_root`.
-
-    Returns:
-        None: This function returns no value.
+        checkpoint1: Đường dẫn checkpoint thứ nhất.
+        checkpoint2: Đường dẫn checkpoint thứ hai để so sánh.
+        data_root: Thư mục test data chung cho cả hai model.
     """
     print("Comparing two models...")
     print("="*70)
@@ -470,14 +416,7 @@ def compare_models(checkpoint1, checkpoint2, data_root):
 
 
 def main():
-    """Execute the main entry-point workflow.
-
-    Args:
-        None.
-
-    Returns:
-        None: This function returns no value.
-    """
+    """Parse CLI arguments và chạy Evaluator (hoặc compare_models nếu có --compare)."""
     parser = argparse.ArgumentParser(description='Evaluate Hyperspectral SR Model')
     parser.add_argument('--checkpoint', type=str, required=True,
                        help='Path to model checkpoint')

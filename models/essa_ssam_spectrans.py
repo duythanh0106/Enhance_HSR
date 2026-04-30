@@ -1,10 +1,19 @@
 """
-ESSA-SSAM-SpecTrans: ESSA + Spatial-Spectral Attention + Spectral Transformer
+ESSA-SSAM-SpecTrans — model đề xuất cuối cùng: ESSA + SSAM + Spectral Transformer.
 
-FINAL PROPOSED MODEL CHO KHÓA LUẬN! 🚀⭐
+Kết hợp 3 thành phần bổ trợ:
+  1. CNN (conv 3×3)         — local spatial features
+  2. SSAM                   — decoupled spectral + spatial attention
+  3. SpectralTransformer    — long-range spectral dependencies, O(C²×HW)
 
-Architecture:
-    CNN (local) + SSAM (attention) + Spectral Transformer (global spectral)
+Kiến trúc: conv_first → BlockupSpecTrans (5 bước progressive) → conv_last
+use_spectrans=False thì tương đương ESSA-SSAM (có thể dùng cho ablation study).
+
+QUAN TRỌNG:
+  - inch phải chỉ định qua dataset= hoặc inch=
+  - Supported upscale: 2^n hoặc 3
+  - Dropout 0.05 (thay vì 0.2) để bảo toàn PSNR — rate cao gây mất detail
+  - Factory build thông qua models/factory.py với key 'ESSA_SSAM_SpecTrans'
 """
 
 import math
@@ -21,27 +30,13 @@ except ImportError:
 
 
 class PatchEmbed(nn.Module):
-    """Chuyển từ image space sang patch embedding"""
+    """Flatten spatial dims và transpose: [B,C,H,W] → [B,H*W,C]."""
+
     def __init__(self):
-        """Initialize the `PatchEmbed` instance.
-
-        Args:
-            None.
-
-        Returns:
-            None: This method initializes state and returns no value.
-        """
         super().__init__()
 
     def forward(self, x):
-        """Run the forward computation for this module.
-
-        Args:
-            x: Input parameter `x`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """[B,C,H,W] → [B,H*W,C] — chuẩn bị cho LayerNorm và attention."""
         x = x.flatten(2).transpose(1, 2)  # [B, C, H, W] -> [B, HW, C]
         return x
 
@@ -53,15 +48,7 @@ class PatchUnEmbed(nn.Module):
         super().__init__()
 
     def forward(self, x, x_size):
-        """Run the forward computation for this module.
-
-        Args:
-            x: Tensor [B, HW, C].
-            x_size: Tuple (H, W) of the spatial dimensions to restore.
-
-        Returns:
-            Tensor [B, C, H, W].
-        """
+        """[B,H*W,C] → [B,C,H,W] — x_size là tuple (H, W)."""
         B, HW, C = x.shape
         # Use C from the tensor — do NOT use a stored embed_dim, which breaks
         # when the channel count differs from the value set at __init__ time.
@@ -181,16 +168,14 @@ class ConvupSpecTrans(_ConvBlockSpecTrans):
 
 
 class Downsample(nn.Sequential):
-    """Downsample layer using PixelUnshuffle"""
+    """PixelUnshuffle downsampling: [B,num_feat,H,W] → [B,num_feat,H/scale,W/scale]."""
+
     def __init__(self, scale, num_feat):
-        """Initialize the `Downsample` instance.
+        """Xây dựng chuỗi PixelUnshuffle layers.
 
         Args:
-            scale: Input parameter `scale`.
-            num_feat: Input parameter `num_feat`.
-
-        Returns:
-            None: This method initializes state and returns no value.
+            scale: Downscale factor — phải là 2^n hoặc 3.
+            num_feat: Số feature channels đầu vào.
         """
         m = []
         if (scale & (scale - 1)) == 0:  # scale = 2^n
@@ -206,16 +191,14 @@ class Downsample(nn.Sequential):
 
 
 class Upsample(nn.Sequential):
-    """Upsample layer using PixelShuffle"""
+    """PixelShuffle upsampling: [B,num_feat,H,W] → [B,num_feat,H*scale,W*scale]."""
+
     def __init__(self, scale, num_feat):
-        """Initialize the `Upsample` instance.
+        """Xây dựng chuỗi PixelShuffle layers.
 
         Args:
-            scale: Input parameter `scale`.
-            num_feat: Input parameter `num_feat`.
-
-        Returns:
-            None: This method initializes state and returns no value.
+            scale: Upscale factor — phải là 2^n hoặc 3.
+            num_feat: Số feature channels đầu vào.
         """
         m = []
         if (scale & (scale - 1)) == 0:  # scale = 2^n
@@ -231,21 +214,17 @@ class Upsample(nn.Sequential):
 
 
 class BlockupSpecTrans(nn.Module):
-    """
-    Blockup với SSAM + Spectral Transformer modules
-    """
+    """5-bước progressive refinement với SSAM + SpecTrans và accumulated skip connections."""
+
     def __init__(self, dim, upscale, fusion_mode='sequential', use_spectrans=True, spectrans_depth=2):
-        """Initialize the `BlockupSpecTrans` instance.
+        """Khởi tạo 5-bước progressive refinement block.
 
         Args:
-            dim: Input parameter `dim`.
-            upscale: Input parameter `upscale`.
-            fusion_mode: Input parameter `fusion_mode`.
-            use_spectrans: Input parameter `use_spectrans`.
-            spectrans_depth: Input parameter `spectrans_depth`.
-
-        Returns:
-            None: This method initializes state and returns no value.
+            dim: Số feature channels.
+            upscale: SR scale factor (2^n hoặc 3).
+            fusion_mode: SSAM fusion strategy — truyền xuống ConvBlock.
+            use_spectrans: Có dùng SpectralTransformer hay không.
+            spectrans_depth: Số blocks trong SpectralTransformer.
         """
         super(BlockupSpecTrans, self).__init__()
         
@@ -255,15 +234,7 @@ class BlockupSpecTrans(nn.Module):
         self.convdownsample = Downsample(scale=upscale, num_feat=dim)
 
     def forward(self, x):
-        # Progressive refinement with skip connections
-        """Run the forward computation for this module.
-
-        Args:
-            x: Input parameter `x`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """5 bước progressive: Input [B,dim,H,W] → Output [B,dim,H*upscale,W*upscale]."""
         xup = self.convupsample(x)
         x1 = self.convup(xup)
         
@@ -283,37 +254,24 @@ class BlockupSpecTrans(nn.Module):
 
 
 class ESSA_SSAM_SpecTrans(nn.Module):
+    """Model đề xuất cuối cùng: ESSA + SSAM + Spectral Transformer.
+
+    Kiến trúc: conv_first → BlockupSpecTrans (5 bước) → conv_last
+    use_spectrans=False → tương đương ESSA-SSAM (dùng cho ablation).
     """
-    ESSA with Spatial-Spectral Attention + Spectral Transformer
-    
-    ĐÂY LÀ MODEL ĐỀ XUẤT CUỐI CÙNG CHO KHÓA LUẬN! 🚀⭐
-    
-    Contributions:
-    1. Spatial-Spectral Attention (SSAM) - Decoupled spatial/spectral processing
-    2. Spectral Transformer - Long-range spectral dependencies
-    3. Efficient design - O(C²·HW) complexity
-    
-    Improvements over ESSA:
-    - Better spectral fidelity (lower SAM)
-    - Better structural similarity (higher SSIM)
-    - Better overall quality (higher PSNR)
-    """
-    
-    def __init__(self, dataset=None, inch=None, dim=128, upscale=4, fusion_mode='sequential', 
+
+    def __init__(self, dataset=None, inch=None, dim=128, upscale=4, fusion_mode='sequential',
                  use_spectrans=True, spectrans_depth=2):
-        """Initialize the `ESSA_SSAM_SpecTrans` instance.
+        """Khởi tạo ESSA-SSAM-SpecTrans.
 
         Args:
-            dataset: Input parameter `dataset`.
-            inch: Input parameter `inch`.
-            dim: Input parameter `dim`.
-            upscale: Input parameter `upscale`.
-            fusion_mode: Input parameter `fusion_mode`.
-            use_spectrans: Input parameter `use_spectrans`.
-            spectrans_depth: Input parameter `spectrans_depth`.
-
-        Returns:
-            None: This method initializes state and returns no value.
+            dataset: HyperspectralDataset — tự đọc num_bands. Hoặc truyền inch trực tiếp.
+            inch: Số spectral bands (bắt buộc nếu dataset=None).
+            dim: Feature channel width (mặc định 128).
+            upscale: SR scale factor (mặc định 4).
+            fusion_mode: SSAM fusion strategy — 'sequential', 'parallel', hoặc 'adaptive'.
+            use_spectrans: True thêm SpectralTransformer; False = ESSA-SSAM only (ablation).
+            spectrans_depth: Số transformer blocks trong SpectralTransformer (mặc định 2).
         """
         super(ESSA_SSAM_SpecTrans, self).__init__()
         
@@ -347,41 +305,19 @@ class ESSA_SSAM_SpecTrans(nn.Module):
         self.conv_last = nn.Conv2d(dim, inch, 3, 1, 1)
 
     def forward(self, x):
-        """Run the forward computation for this module.
-
-        Args:
-            x: Input parameter `x`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """SR inference — Input [B,inch,H,W] → Output [B,inch,H*upscale,W*upscale]."""
         x = self.conv_first(x)
         x = self.blockup(x)
         x = self.conv_last(x)
         return x
-    
+
     @classmethod
     def from_dataset(cls, dataset, **kwargs):
-        """Execute `from_dataset`.
-
-        Args:
-            dataset: Input parameter `dataset`.
-            **kwargs: Input parameter `**kwargs`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Tạo model từ dataset object — tự đọc num_bands."""
         return cls(dataset=dataset, **kwargs)
-    
+
     def get_model_info(self):
-        """Execute `get_model_info`.
-
-        Args:
-            None.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Trả về dict thông tin model: name, channels, dim, upscale, spectrans params, total params."""
         num_params = sum(p.numel() for p in self.parameters())
         return {
             'model_name': 'ESSA-SSAM-SpecTrans',
@@ -399,61 +335,69 @@ class ESSA_SSAM_SpecTrans(nn.Module):
 
 # Test code
 if __name__ == '__main__':
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+    # Read feature_dim and spectrans_depth from project config if available
+    try:
+        from config import ConfigHarvard
+        _cfg = ConfigHarvard()
+        _DIM = _cfg.feature_dim          # 256
+        _DEPTH = _cfg.spectrans_depth    # 3
+        _BANDS = 31
+        print(f"[config] Using ConfigHarvard: feature_dim={_DIM}, spectrans_depth={_DEPTH}")
+    except Exception:
+        _DIM, _DEPTH, _BANDS = 128, 2, 31
+        print(f"[config] Fallback defaults: feature_dim={_DIM}, spectrans_depth={_DEPTH}")
+
     print("=" * 70)
     print("Testing ESSA-SSAM-SpecTrans Model")
     print("=" * 70)
-    
-    # Test với different configurations
-    configs = [
-        {'use_spectrans': False, 'name': 'ESSA-SSAM (without SpecTrans)'},
-        {'use_spectrans': True, 'spectrans_depth': 1, 'name': 'ESSA-SSAM-SpecTrans (depth=1)'},
-        {'use_spectrans': True, 'spectrans_depth': 2, 'name': 'ESSA-SSAM-SpecTrans (depth=2)'},
+
+    test_configs = [
+        {'use_spectrans': False,  'spectrans_depth': _DEPTH, 'name': f'ESSA-SSAM (no SpecTrans, dim={_DIM})'},
+        {'use_spectrans': True,   'spectrans_depth': 1,      'name': f'ESSA-SSAM-SpecTrans (dim={_DIM}, depth=1)'},
+        {'use_spectrans': True,   'spectrans_depth': _DEPTH, 'name': f'ESSA-SSAM-SpecTrans (dim={_DIM}, depth={_DEPTH}) ← config'},
     ]
-    
-    for config in configs:
+
+    for cfg in test_configs:
         print(f"\n{'='*70}")
-        print(f"Testing: {config['name']}")
+        print(f"Testing: {cfg['name']}")
         print(f"{'='*70}")
-        
-        # Create model
+
         model = ESSA_SSAM_SpecTrans(
-            inch=31, 
-            dim=128, 
-            upscale=4, 
+            inch=_BANDS,
+            dim=_DIM,
+            upscale=4,
             fusion_mode='sequential',
-            use_spectrans=config.get('use_spectrans', True),
-            spectrans_depth=config.get('spectrans_depth', 2)
+            use_spectrans=cfg['use_spectrans'],
+            spectrans_depth=cfg['spectrans_depth'],
         )
-        
-        # Print model info
+
         info = model.get_model_info()
         for key, value in info.items():
             print(f"{key}: {value}")
-        
-        # Test forward pass
-        x = torch.randn(1, 31, 64, 64)
+
+        x = torch.randn(1, _BANDS, 64, 64)
         print(f"\nInput shape: {x.shape}")
-        
         with torch.no_grad():
             out = model(x)
-        
         print(f"Output shape: {out.shape}")
-        assert out.shape == (1, 31, 256, 256), "Output shape mismatch!"
-        
-        print(f"✅ Test passed for {config['name']}!")
-    
+        assert out.shape == (1, _BANDS, 256, 256), "Output shape mismatch!"
+        print(f"✅ Test passed for {cfg['name']}!")
+
     print("\n" + "="*70)
     print("All tests completed successfully!")
     print("="*70)
-    
+
     # Parameter comparison
     print("\n" + "="*70)
     print("Parameter Comparison:")
     print("="*70)
-    
-    model_no_trans = ESSA_SSAM_SpecTrans(inch=31, dim=128, upscale=4, use_spectrans=False)
-    model_with_trans = ESSA_SSAM_SpecTrans(inch=31, dim=128, upscale=4, use_spectrans=True, spectrans_depth=2)
-    
+
+    model_no_trans = ESSA_SSAM_SpecTrans(inch=_BANDS, dim=_DIM, upscale=4, use_spectrans=False)
+    model_with_trans = ESSA_SSAM_SpecTrans(inch=_BANDS, dim=_DIM, upscale=4, use_spectrans=True, spectrans_depth=_DEPTH)
+
     params_no_trans = sum(p.numel() for p in model_no_trans.parameters())
     params_with_trans = sum(p.numel() for p in model_with_trans.parameters())
     

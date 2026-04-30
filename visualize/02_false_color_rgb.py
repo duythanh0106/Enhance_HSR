@@ -44,6 +44,7 @@ def load_hr_png_rgb(dataset, scale, scene) -> np.ndarray:
 
 
 def add_zoom_inset(ax, img, region, loc="lower right"):
+    """Thêm inset zoom vào ax tại vùng region và vẽ hộp vàng trên ảnh gốc."""
     r0, r1, c0, c1 = region
     patch = img[r0:r1, c0:c1]
 
@@ -71,7 +72,7 @@ def add_zoom_inset(ax, img, region, loc="lower right"):
 def plot_false_color(dataset, scale, scene,
                      bands=None, output_dir="figures",
                      show_zoom=True):
-
+    """Vẽ và lưu so sánh false-color RGB: LR / ESSA gốc / Đề xuất / GT."""
     if bands is None:
         bands = DEFAULT_RGB_BANDS[dataset]
 
@@ -183,6 +184,7 @@ def plot_false_color(dataset, scale, scene,
 
 
 def main():
+    """Parse CLI args và chạy plot_false_color cho dataset/scale/scene đã chọn."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", default="CAVE",
                         choices=["CAVE", "Harvard", "Chikusei", "Pavia"])

@@ -81,6 +81,7 @@ METRICS_CFG = {
 
 
 def plot_ablation_single(dataset, scale, metrics=None, output_dir="figures"):
+    """Vẽ và lưu biểu đồ ablation bar cho một dataset × scale."""
     if metrics is None:
         metrics = ["PSNR", "SAM", "SSIM", "ERGAS"]
 
@@ -224,6 +225,7 @@ def plot_ablation_multi(scale, metric="PSNR", output_dir="figures"):
 
 
 def main():
+    """Parse CLI args và chạy ablation chart cho dataset/scale/metrics đã chọn."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", default="CAVE",
                         choices=list(ABLATION_DATA.keys()) + ["all"])

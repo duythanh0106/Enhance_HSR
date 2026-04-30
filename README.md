@@ -183,14 +183,14 @@ python3 -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
 python3 models/essa_ssam_spectrans.py
 ```
 
-**Expected output:**
+**Expected output (một phần):**
 ```
 Testing ESSA-SSAM-SpecTrans Model
 ======================================================================
-Testing: ESSA-SSAM-SpecTrans (depth=2)
+...
 model_name: ESSA-SSAM-SpecTrans
-total_parameters: 3,245,123
-✅ All tests completed successfully!
+total_parameters: 3,514,275
+✅ Test passed for ESSA-SSAM-SpecTrans (depth=2)!
 ```
 
 ### Smoke Test Commands (nhanh, không train full)
@@ -250,23 +250,35 @@ data/
 │   └── ... (50 scenes total)
 │
 ├── Chikusei/
-│   ├── Chikusei.mat            
-│   ├── Chikusei_gt.mat         
-│   └── README.txt                
+│   ├── HyperspecVNIR_Chikusei_20140729.mat
+│   └── HyperspecVNIR_Chikusei_20140729_Ground_Truth.mat
 │
 └── PaviaCentre/
-    ├── Pavia_centre.mat      
-    ├── Pavia_centre_gt.mat       
-    └── README.txt
+    ├── Pavia.mat
+    └── Pavia_gt.mat
 ```
 
 ### Train/Val/Test Splits
 
-Project hỗ trợ split tự động theo từng dataset:
-- `data/splits.py` tạo `split.json` theo tỷ lệ mặc định `train=0.8`, `val=0.1`, `test=0.1` (seed=42)
-- `train.py` dùng trực tiếp split `train` và `val` từ `split.json` (không tách ngẫu nhiên lần 2)
-- `test_full_image.py` và `evaluate.py` dùng split `test`
-- Có thể chỉnh trực tiếp trong `config.py`: `split_seed`, `train_ratio`, `val_ratio`, `test_ratio`, `regenerate_split`
+Project dùng `split.json` để chia dữ liệu:
+- `data/splits.py` định nghĩa logic chia split theo từng dataset
+- `train.py` dùng split `train` và `val`; `test_full_image.py` / `evaluate.py` dùng split `test`
+- Có thể chỉnh trong `config.py`: `split_seed`, `train_ratio`, `val_ratio`, `test_ratio`, `regenerate_split`
+
+**⚠️ `split.json` phải tồn tại trước khi chạy train/test.** Các dataset đi kèm repo (`CAVE`, `Harvard`, `Chikusei`, `PaviaCentre`) đã có sẵn `split.json`. Với dataset mới, tạo split bằng `prepare_data.py` (xem phần [Dataset](#dataset)) hoặc đặt `regenerate_split = True` trong `config.py` cho lần chạy đầu tiên.
+
+**Tạo split.json cho dataset mới:**
+
+```bash
+# Inspect mat key trước
+python3 prepare_data.py --inspect --dataset cave --src ./raw/CAVE
+
+# Tạo split + crop theo paper protocol
+python3 prepare_data.py --dataset cave     --src ./raw/CAVE     --dst ./data/CAVE
+python3 prepare_data.py --dataset harvard  --src ./raw/Harvard  --dst ./data/Harvard
+python3 prepare_data.py --dataset chikusei --src ./raw/Chikusei --dst ./data/Chikusei
+python3 prepare_data.py --dataset pavia    --src ./raw/Pavia    --dst ./data/PaviaCentre
+```
 
 **⚠️ Important:** Không dùng dữ liệu `test` để huấn luyện.
 
@@ -278,14 +290,9 @@ Với các dataset kiểu này thường có:
 
 Hành vi hiện tại của code:
 - Tự bỏ qua file ground-truth không phải hyperspectral cube khi tạo/đọc split
-- `split.json` thực tế sẽ thành `train=1, val=0, test=0` (vì chỉ có 1 ảnh hợp lệ)
-- Khi train: nếu `val` rỗng, code tự fallback dùng `train` để validate
-- Khi test/evaluate: nếu `test` rỗng, code tự fallback dùng `train` để test
-
-Vì vậy khi thấy warning:
-- `Test split is empty. Falling back to split='train'...`
-
-thì đó là đúng hành vi mong đợi cho dataset 1 ảnh.
+- Với Chikusei và PaviaCentre, `splits.py` áp dụng protocol riêng: chia ảnh thành các patch/strip không overlap để tạo `train`, `val`, `test` đầy đủ (không rỗng)
+- Khi train: nếu `val` rỗng (dataset khác, không có protocol), `train.py` tự fallback dùng `train` để validate — sẽ thấy warning `⚠️ Split 'val' is empty. Falling back to split='train'.`
+- Khi test: `test_full_image.py` **không** fallback — nếu `test` rỗng sẽ báo lỗi. `evaluate.py` vẫn fallback về `train` nếu `test` rỗng.
 
 ---
 
@@ -299,7 +306,7 @@ Nếu chưa activate venv, dùng `./.venv/bin/python` thay cho `python3`.
 python3 train.py --config spectrans --data_root <DATA_ROOT>
 ```
 
-`--config` hỗ trợ: `default`, `baseline`, `proposed`, `spectrans`, `lightweight`, `universal_best`.
+`--config` hỗ trợ: `default`, `baseline`, `proposed`, `spectrans`, `lightweight`, `universal_best`, `cave`, `harvard`, `chikusei`, `pavia`, `baseline_cave`, `baseline_harvard`, `baseline_chikusei`, `baseline_pavia`. Các preset dataset còn hỗ trợ suffix `_x2` / `_x4` (ví dụ: `cave_x4`, `pavia_x2`).
 
 Preset khuyên dùng để train ổn trên cả Harvard/CAVE và Chikusei/Pavia:
 
@@ -382,12 +389,14 @@ loss_phase1_sam_scale = 0.3
 loss_phase1_ssim_scale = 0.25
 best_selection_metric = 'composite'
 use_early_stopping = True
+
+# Profile multi-scene (Harvard/CAVE — nhiều ảnh riêng biệt)
+num_epochs = 1000
 early_stopping_patience = 40
 early_stopping_min_delta = 1e-4
 early_stopping_start_epoch = 20
-num_epochs = 1000  # profile multi-scene (Harvard/CAVE)
 
-# Tự chuyển profile khi dataset là single-scene (Chikusei/Pavia)
+# Profile single-scene (Chikusei/Pavia — tự chuyển khi phát hiện 1 ảnh lớn)
 train_virtual_samples_per_epoch = 2000
 val_virtual_samples_per_epoch = 256
 num_epochs = 100
@@ -554,7 +563,7 @@ tail -f logs/<experiment_name>/training.log
 
 Điều kiện trước khi test/evaluate:
 - Có checkpoint `.pth` từ bước train
-- `data_root` chứa dữ liệu HSI hợp lệ (`.mat` hoặc scene-folder dạng `*_ms_XX.png`) và có/được tạo `split.json`
+- `data_root` chứa dữ liệu HSI hợp lệ (`.mat` hoặc scene-folder dạng `*_ms_XX.png`) và đã có `split.json`
 
 ```bash
 # Liệt kê checkpoint có sẵn
@@ -755,6 +764,10 @@ Enhance_HSR/
 ├── train.py                               # Training entrypoint
 ├── evaluate.py                            # Evaluation script (results/)
 ├── test_full_image.py                     # Full-image test script (test_results/)
+├── prepare_data.py                        # Tạo split.json cho dataset mới (paper-style crops)
+├── tune_optuna.py                         # Hyperparameter tuning với Optuna
+├── seed_sweep.py                          # Sweep nhiều seed, chọn checkpoint tốt nhất
+├── plot_training_log.py                   # Vẽ biểu đồ từ training.log
 │
 ├── models/
 │   ├── __init__.py
@@ -789,6 +802,9 @@ Enhance_HSR/
 │   ├── device.py                          # auto device: cuda/mps/cpu
 │   ├── losses.py
 │   ├── metrics.py
+│   ├── inference.py                       # sliding-window forward_chop
+│   ├── scoring.py                         # composite score
+│   ├── time_utils.py                      # format_duration
 │   └── visualization.py
 │
 ├── checkpoints/                           # Saved checkpoints by experiment

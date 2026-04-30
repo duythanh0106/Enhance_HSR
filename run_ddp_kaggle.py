@@ -10,6 +10,7 @@ from train import ModelEMA
 
 
 def parse_args():
+    """Parse CLI arguments cho DDP launcher."""
     parser = argparse.ArgumentParser(description="Kaggle DDP launcher for Enhance_HSR")
     parser.add_argument("--config", type=str, default="chikusei")
     parser.add_argument("--data_root", type=str, required=True)
@@ -37,6 +38,7 @@ def parse_args():
 
 
 def main():
+    """Khởi tạo DDP process group, build Trainer và chạy training với DistributedDataParallel."""
     args = parse_args()
 
     dist.init_process_group(backend="nccl")

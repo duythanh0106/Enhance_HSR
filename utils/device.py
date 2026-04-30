@@ -1,16 +1,26 @@
-"""Device selection utilities."""
+"""
+Device selection utilities — chọn compute device cho training và inference.
+
+Thứ tự ưu tiên: explicit request → CUDA → MPS → CPU.
+Dùng chung bởi train.py, test_full_image.py, evaluate.py và các script khác.
+
+QUAN TRỌNG:
+  - 'auto' luôn chọn thiết bị mạnh nhất available trên máy hiện tại
+  - MPS là Apple Silicon GPU (M1/M2/M3); không hỗ trợ tất cả ops của PyTorch
+  - Nếu MPS gặp lỗi at runtime, các script thường fallback sang CPU tự động
+"""
 
 import torch
 
 
 def resolve_device(preferred='auto'):
-    """Execute `resolve_device`.
+    """Chọn torch.device phù hợp nhất với hardware hiện tại.
 
     Args:
-        preferred: Input parameter `preferred`.
+        preferred: Thiết bị ưu tiên — 'auto', 'cuda', 'mps', hoặc 'cpu' (case-insensitive).
 
     Returns:
-        Any: Output produced by this function.
+        torch.device: Thiết bị tốt nhất available theo thứ tự ưu tiên.
     """
     preferred = (preferred or 'auto').lower()
 

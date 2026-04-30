@@ -1,6 +1,19 @@
 """
-ESSA-SSAM: ESSA with Spatial-Spectral Attention Module
-VERSION: Auto-detect spectral bands from dataset
+ESSA-SSAM — ESSA backbone tích hợp Spatial-Spectral Attention Module.
+
+Cải tiến so với ESSA gốc (essa_original.py):
+  - ESSAttn được thay bằng SpatialSpectralAttention (SSAM)
+  - SSAM học đồng thời spatial importance và spectral band correlation
+  - Hỗ trợ 3 fusion modes: sequential / parallel / adaptive
+
+Kiến trúc chính:
+  conv_first → BlockupSSAM (5 bước refinement) → conv_last
+  BlockupSSAM dùng Upsample/Downsample PixelShuffle kết hợp 2 SSAM blocks.
+
+QUAN TRỌNG:
+  - inch (số bands) phải được chỉ định qua dataset= hoặc inch= khi khởi tạo
+  - Supported upscale: 2^n hoặc 3 (dùng PixelShuffle/PixelUnshuffle)
+  - Factory build thông qua models/factory.py — không cần import trực tiếp
 """
 
 import math
@@ -15,41 +28,23 @@ from .spatial_spectral_attention import SpatialSpectralAttention
 # ==========================================================
 
 class PatchEmbed(nn.Module):
+    """Flatten spatial dims và transpose thành sequence: [B,C,H,W] → [B,HW,C]."""
+
     def forward(self, x):
-        """Run the forward computation for this module.
-
-        Args:
-            x: Input parameter `x`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """[B,C,H,W] → [B,H*W,C] — chuẩn bị cho LayerNorm trên channel dim."""
         return x.flatten(2).transpose(1, 2)
 
 
 class PatchUnEmbed(nn.Module):
+    """Đảo ngược PatchEmbed: [B,HW,C] → [B,C,H,W]."""
+
     def __init__(self, embed_dim):
-        """Initialize the `PatchUnEmbed` instance.
-
-        Args:
-            embed_dim: Input parameter `embed_dim`.
-
-        Returns:
-            None: This method initializes state and returns no value.
-        """
+        """Khởi tạo với embed_dim channels — dùng khi reshape về image space."""
         super().__init__()
         self.embed_dim = embed_dim
 
     def forward(self, x, x_size):
-        """Run the forward computation for this module.
-
-        Args:
-            x: Input parameter `x`.
-            x_size: Input parameter `x_size`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """[B,H*W,C] → [B,embed_dim,H,W] — x_size là tuple (H, W)."""
         B, HW, C = x.shape
         return x.transpose(1, 2).view(B, self.embed_dim, x_size[0], x_size[1])
 
@@ -59,16 +54,12 @@ class PatchUnEmbed(nn.Module):
 # ==========================================================
 
 class ConvdownSSAM(nn.Module):
+    """Conv block với SSAM attention — dùng ở nhánh feature extraction (LR space).
+
+    Pipeline: norm → SSAM → concat(x, shortcut) → conv 1×1+3×3+1×1 → + shortcut
+    """
+
     def __init__(self, dim, fusion_mode='sequential'):
-        """Initialize the `ConvdownSSAM` instance.
-
-        Args:
-            dim: Input parameter `dim`.
-            fusion_mode: Input parameter `fusion_mode`.
-
-        Returns:
-            None: This method initializes state and returns no value.
-        """
         super().__init__()
 
         self.patch_embed = PatchEmbed()
@@ -95,14 +86,7 @@ class ConvdownSSAM(nn.Module):
         )
 
     def forward(self, x):
-        """Run the forward computation for this module.
-
-        Args:
-            x: Input parameter `x`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Input [B,dim,H,W] → Output [B,dim,H,W] — feature refinement với skip."""
         shortcut = x
         x_size = (x.shape[2], x.shape[3])
 
@@ -121,16 +105,12 @@ class ConvdownSSAM(nn.Module):
 
 
 class ConvupSSAM(nn.Module):
+    """Conv block với SSAM attention — dùng ở nhánh HR space (sau upsample).
+
+    Cấu trúc giống ConvdownSSAM nhưng dùng convu thay convd.
+    """
+
     def __init__(self, dim, fusion_mode='sequential'):
-        """Initialize the `ConvupSSAM` instance.
-
-        Args:
-            dim: Input parameter `dim`.
-            fusion_mode: Input parameter `fusion_mode`.
-
-        Returns:
-            None: This method initializes state and returns no value.
-        """
         super().__init__()
 
         self.patch_embed = PatchEmbed()
@@ -157,14 +137,7 @@ class ConvupSSAM(nn.Module):
         )
 
     def forward(self, x):
-        """Run the forward computation for this module.
-
-        Args:
-            x: Input parameter `x`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Input [B,dim,H,W] → Output [B,dim,H,W] — HR-space feature refinement."""
         shortcut = x
         x_size = (x.shape[2], x.shape[3])
 
@@ -187,16 +160,14 @@ class ConvupSSAM(nn.Module):
 # ==========================================================
 
 class Downsample(nn.Sequential):
+    """PixelUnshuffle downsampling — giảm spatial resolution theo scale factor.
+
+    Input:  [B, num_feat, H, W]
+    Output: [B, num_feat, H/scale, W/scale]
+    Chỉ hỗ trợ scale là 2^n hoặc 3.
+    """
+
     def __init__(self, scale, num_feat):
-        """Initialize the `Downsample` instance.
-
-        Args:
-            scale: Input parameter `scale`.
-            num_feat: Input parameter `num_feat`.
-
-        Returns:
-            None: This method initializes state and returns no value.
-        """
         m = []
         if (scale & (scale - 1)) == 0:
             for _ in range(int(math.log(scale, 2))):
@@ -211,16 +182,14 @@ class Downsample(nn.Sequential):
 
 
 class Upsample(nn.Sequential):
+    """PixelShuffle upsampling — tăng spatial resolution theo scale factor.
+
+    Input:  [B, num_feat, H, W]
+    Output: [B, num_feat, H*scale, W*scale]
+    Chỉ hỗ trợ scale là 2^n hoặc 3.
+    """
+
     def __init__(self, scale, num_feat):
-        """Initialize the `Upsample` instance.
-
-        Args:
-            scale: Input parameter `scale`.
-            num_feat: Input parameter `num_feat`.
-
-        Returns:
-            None: This method initializes state and returns no value.
-        """
         m = []
         if (scale & (scale - 1)) == 0:
             for _ in range(int(math.log(scale, 2))):
@@ -239,24 +208,20 @@ class Upsample(nn.Sequential):
 # ==========================================================
 
 class ESSA_SSAM(nn.Module):
-    """
-    ESSA-SSAM (Auto Band Detection Compatible)
+    """ESSA với Spatial-Spectral Attention — model cải tiến (không có SpecTrans).
+
+    Kiến trúc: conv_first (inch→dim) → BlockupSSAM → conv_last (dim→inch)
     """
 
-    def __init__(self, dataset=None, inch=None,
-                 dim=128, upscale=4,
-                 fusion_mode='sequential'):
-        """Initialize the `ESSA_SSAM` instance.
+    def __init__(self, dataset=None, inch=None, dim=128, upscale=4, fusion_mode='sequential'):
+        """Khởi tạo ESSA-SSAM.
 
         Args:
-            dataset: Input parameter `dataset`.
-            inch: Input parameter `inch`.
-            dim: Input parameter `dim`.
-            upscale: Input parameter `upscale`.
-            fusion_mode: Input parameter `fusion_mode`.
-
-        Returns:
-            None: This method initializes state and returns no value.
+            dataset: HyperspectralDataset — tự đọc num_bands. Hoặc truyền inch trực tiếp.
+            inch: Số spectral bands (bắt buộc nếu dataset=None).
+            dim: Feature channel width (mặc định 128).
+            upscale: SR scale factor (mặc định 4).
+            fusion_mode: SSAM fusion strategy — 'sequential', 'parallel', hoặc 'adaptive'.
         """
         super().__init__()
 
@@ -277,14 +242,7 @@ class ESSA_SSAM(nn.Module):
         self.conv_last = nn.Conv2d(dim, inch, 3, 1, 1)
 
     def forward(self, x):
-        """Run the forward computation for this module.
-
-        Args:
-            x: Input parameter `x`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """SR inference — Input [B,inch,H,W] → Output [B,inch,H*upscale,W*upscale]."""
         x = self.conv_first(x)
         x = self.blockup(x)
         x = self.conv_last(x)
@@ -292,26 +250,11 @@ class ESSA_SSAM(nn.Module):
 
     @classmethod
     def from_dataset(cls, dataset, **kwargs):
-        """Execute `from_dataset`.
-
-        Args:
-            dataset: Input parameter `dataset`.
-            **kwargs: Input parameter `**kwargs`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Tạo model từ dataset object — tự đọc num_bands."""
         return cls(dataset=dataset, **kwargs)
 
     def get_model_info(self):
-        """Execute `get_model_info`.
-
-        Args:
-            None.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Trả về dict thông tin model: name, channels, dim, upscale, fusion, params."""
         num_params = sum(p.numel() for p in self.parameters())
         return {
             "model_name": "ESSA-SSAM",
@@ -328,17 +271,13 @@ class ESSA_SSAM(nn.Module):
 # ==========================================================
 
 class BlockupSSAM(nn.Module):
+    """5-bước progressive refinement loop: LR→HR→LR→HR→LR→HR với skip connections.
+
+    Mỗi bước: upsample/downsample + ConvSSAM block + accumulated skip.
+    Output cuối (x5) là ở HR space, sẵn sàng cho conv_last.
+    """
+
     def __init__(self, dim, upscale, fusion_mode='sequential'):
-        """Initialize the `BlockupSSAM` instance.
-
-        Args:
-            dim: Input parameter `dim`.
-            upscale: Input parameter `upscale`.
-            fusion_mode: Input parameter `fusion_mode`.
-
-        Returns:
-            None: This method initializes state and returns no value.
-        """
         super().__init__()
         self.convup = ConvupSSAM(dim, fusion_mode)
         self.convdown = ConvdownSSAM(dim, fusion_mode)
@@ -346,14 +285,7 @@ class BlockupSSAM(nn.Module):
         self.convdownsample = Downsample(upscale, dim)
 
     def forward(self, x):
-        """Run the forward computation for this module.
-
-        Args:
-            x: Input parameter `x`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """5 bước progressive: Input [B,dim,H,W] → Output [B,dim,H*upscale,W*upscale]."""
         xup = self.convupsample(x)
         x1 = self.convup(xup)
 

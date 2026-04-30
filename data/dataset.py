@@ -1,6 +1,26 @@
 """
-Universal Hyperspectral Dataset (Dataset-Agnostic)
-Supports any hyperspectral dataset with automatic split & band detection
+Dataset loader cho Hyperspectral Image Super-Resolution.
+
+Dataset-agnostic — hỗ trợ mọi loại dataset HSI không cần hardcode tên scene.
+Tự động detect số bands, tạo LR-HR pairs on-the-fly khi training.
+
+Hai class chính:
+  HyperspectralDataset    — training/val: random crop patch, augment, tạo LR on-the-fly
+  HyperspectralTestDataset — test: toàn ảnh đầy đủ, tạo LR on-the-fly, trả thêm sample_id
+
+Supported input formats:
+  .mat  (MATLAB v5 hoặc v7.3/HDF5), .npy [H,W,C], scene folder (*_ms_XX.png)
+
+QUAN TRỌNG:
+  - Dataset KHÔNG tự generate split.json — cần chạy generate_split() hoặc prepare_data.py trước
+  - force_regenerate_split=True mới generate; False (default) sẽ raise nếu split.json không có
+  - LR được tạo bằng bicubic downsampling on-the-fly (không save ra disk)
+  - Normalization: 'per_image_minmax' hoặc 'global_fixed' (xem normalize_image)
+  - virtual_samples_per_epoch > 0 cho phép sample nhiều patch hơn số files thực sự có
+
+Output của __getitem__:
+  HyperspectralDataset    : (lr_tensor [C,H/s,W/s], hr_tensor [C,H,W])
+  HyperspectralTestDataset: (lr_tensor, hr_tensor, sample_id_str)
 """
 
 import os
@@ -26,13 +46,13 @@ except ImportError:  # pragma: no cover - optional dependency at runtime
 
 
 def _to_hwc_cube(img):
-    """Internal helper for `to_hwc_cube` operations.
+    """Chuyển 3D array về [H,W,C] bằng cách đặt axis nhỏ nhất về cuối.
 
     Args:
-        img: Input parameter `img`.
+        img: ndarray 3D, bất kỳ thứ tự axis.
 
     Returns:
-        Any: Output produced by this function.
+        np.ndarray: Shape [H,W,C] — spectral channels ở axis 2.
     """
     if img.ndim != 3:
         raise ValueError(f"Expected 3D hyperspectral cube, got shape={img.shape}")
@@ -46,14 +66,14 @@ def _to_hwc_cube(img):
 
 
 def _extract_hsi_from_mat_dict(mat_data, path):
-    """Internal helper for `extract_hsi_from_mat_dict` operations.
+    """Tìm và trả về 3D HSI cube từ dict MAT file — ưu tiên key 'rad','cube','ref','data','img'.
 
     Args:
-        mat_data: Input parameter `mat_data`.
-        path: Input parameter `path`.
+        mat_data: Dict từ scipy.io.loadmat.
+        path: Đường dẫn file (dùng cho error message).
 
     Returns:
-        Any: Output produced by this function.
+        np.ndarray: Shape [H,W,C] float32.
     """
     possible_keys = ['rad', 'cube', 'ref', 'data', 'img', 'chikusei']
 
@@ -76,13 +96,13 @@ def _extract_hsi_from_mat_dict(mat_data, path):
 
 
 def _load_hdf5_hyperspectral_image(path):
-    """Internal helper for `load_hdf5_hyperspectral_image` operations.
+    """Load hyperspectral cube từ file MATLAB v7.3 (HDF5-based) qua h5py.
 
     Args:
-        path: Input parameter `path`.
+        path: Đường dẫn tới file .mat v7.3.
 
     Returns:
-        Any: Output produced by this function.
+        np.ndarray: Shape [H,W,C] float32.
     """
     if h5py is None:
         raise ValueError(
@@ -98,15 +118,7 @@ def _load_hdf5_hyperspectral_image(path):
         candidates = []
 
         def visitor(name, obj):
-            """Execute `visitor`.
-
-            Args:
-                name: Input parameter `name`.
-                obj: Input parameter `obj`.
-
-            Returns:
-                None: This function returns no value.
-            """
+            """Callback cho h5py.visititems — thu thập tên datasets 3D."""
             if isinstance(obj, h5py.Dataset) and len(obj.shape) == 3:
                 candidates.append(name)
 
@@ -213,11 +225,16 @@ def load_hyperspectral_image(path):
 
 
 def normalize_image(img, mode='per_image_minmax', global_scale=65535.0):
-    """Normalize hyperspectral cube with configurable strategy.
+    """Normalize hyperspectral cube về [0, 1].
 
-    Supported modes:
-      - `per_image_minmax`: normalize each sample by its own min/max (legacy behavior)
-      - `global_fixed`: normalize by fixed sensor scale (e.g. 4095 or 65535)
+    Args:
+        img: np.ndarray HSI cube (bất kỳ shape).
+        mode: 'per_image_minmax' — normalize theo min/max của chính ảnh đó;
+              'global_fixed' — chia cho global_scale cố định (paper-style).
+        global_scale: Sensor max value dùng cho 'global_fixed' (mặc định 65535.0).
+
+    Returns:
+        np.ndarray: float32 trong [0, 1].
     """
     img = np.asarray(img, dtype=np.float32)
     norm_mode = str(mode or 'per_image_minmax').lower()
@@ -242,18 +259,18 @@ def normalize_image(img, mode='per_image_minmax', global_scale=65535.0):
 
 def build_split_kwargs(upscale=4, split_seed=42, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1,
                        force_regenerate_split=False):
-    """Execute `build_split_kwargs`.
+    """Tạo dict kwargs cho HyperspectralDataset từ các tham số split.
 
     Args:
-        upscale: Input parameter `upscale`.
-        split_seed: Input parameter `split_seed`.
-        train_ratio: Input parameter `train_ratio`.
-        val_ratio: Input parameter `val_ratio`.
-        test_ratio: Input parameter `test_ratio`.
-        force_regenerate_split: Input parameter `force_regenerate_split`.
+        upscale: SR scale factor.
+        split_seed: Random seed cho split.json.
+        train_ratio: Tỉ lệ training.
+        val_ratio: Tỉ lệ validation.
+        test_ratio: Tỉ lệ test.
+        force_regenerate_split: True để tạo lại split.json dù đã tồn tại.
 
     Returns:
-        Any: Output produced by this function.
+        dict: Kwargs sẵn sàng truyền vào HyperspectralDataset(**kwargs).
     """
     return {
         'upscale': upscale,
@@ -266,17 +283,17 @@ def build_split_kwargs(upscale=4, split_seed=42, train_ratio=0.8, val_ratio=0.1,
 
 
 def load_dataset_with_fallback(dataset_cls, primary_split, fallback_split='train', log_fn=print, **kwargs):
-    """Execute `load_dataset_with_fallback`.
+    """Tạo dataset với primary_split; fallback sang fallback_split nếu split rỗng.
 
     Args:
-        dataset_cls: Input parameter `dataset_cls`.
-        primary_split: Input parameter `primary_split`.
-        fallback_split: Input parameter `fallback_split`.
-        log_fn: Input parameter `log_fn`.
-        **kwargs: Input parameter `**kwargs`.
+        dataset_cls: Dataset class (HyperspectralDataset hoặc HyperspectralTestDataset).
+        primary_split: Split ưu tiên — 'train', 'val', hoặc 'test'.
+        fallback_split: Split thay thế khi primary_split rỗng (mặc định 'train').
+        log_fn: Hàm log khi fallback xảy ra (mặc định print).
+        **kwargs: Các tham số truyền vào dataset_cls.
 
     Returns:
-        Any: Output produced by this function.
+        tuple: (dataset_instance, split_used_str).
     """
     try:
         dataset = dataset_cls(split=primary_split, **kwargs)
@@ -359,14 +376,7 @@ def downsample_bicubic(img, scale):
 
 
 def _load_hyperspectral_image_or_none(path):
-    """Internal helper for `load_hyperspectral_image_or_none` operations.
-
-    Args:
-        path: Input parameter `path`.
-
-    Returns:
-        Any: Output produced by this function.
-    """
+    """Tải ảnh HSI từ path; trả về None nếu xảy ra lỗi (in error ra console)."""
     try:
         return load_hyperspectral_image(path)
     except Exception as e:
@@ -496,13 +506,11 @@ def _filter_valid_hsi_paths(paths, split):
 # ==========================================================
 
 class HyperspectralDataset(Dataset):
-    """
-    Generic Hyperspectral Training Dataset
-    - Automatic split (train)
-    - Automatic spectral band detection
-    - Random crop
-    - Augmentation
-    - Downsampling to create LR-HR pair
+    """Dataset training/val cho Hyperspectral SR — tạo LR-HR pairs on-the-fly.
+
+    Tự động detect số bands, random crop patch, augment, bicubic downsample.
+    Hỗ trợ virtual_samples_per_epoch để oversample khi dataset có ít files.
+    __getitem__ trả về (lr_tensor [C,H/s,W/s], hr_tensor [C,H,W]).
     """
 
     def __init__(self, data_root, patch_size=128,
@@ -512,26 +520,23 @@ class HyperspectralDataset(Dataset):
                  cache_in_memory=False, normalization_mode='per_image_minmax',
                  normalization_scale=65535.0):
 
-        """Initialize the `HyperspectralDataset` instance.
+        """Khởi tạo dataset training/val.
 
         Args:
-            data_root: Input parameter `data_root`.
-            patch_size: Input parameter `patch_size`.
-            upscale: Input parameter `upscale`.
-            augment: Input parameter `augment`.
-            split: Input parameter `split`.
-            split_seed: Input parameter `split_seed`.
-            train_ratio: Input parameter `train_ratio`.
-            val_ratio: Input parameter `val_ratio`.
-            test_ratio: Input parameter `test_ratio`.
-            force_regenerate_split: Input parameter `force_regenerate_split`.
-            virtual_samples_per_epoch: Input parameter `virtual_samples_per_epoch`.
-            cache_in_memory: Input parameter `cache_in_memory`.
-            normalization_mode: Input parameter `normalization_mode`.
-            normalization_scale: Input parameter `normalization_scale`.
-
-        Returns:
-            None: This method initializes state and returns no value.
+            data_root: Thư mục chứa hyperspectral data và split.json.
+            patch_size: Kích thước HR patch khi random crop (mặc định 128).
+            upscale: SR scale factor để tạo LR (mặc định 4).
+            augment: True để dùng random flip + rotation augmentation.
+            split: 'train', 'val', 'test', hoặc 'trainval'.
+            split_seed: Random seed cho split.json (mặc định 42).
+            train_ratio: Tỉ lệ training trong split.
+            val_ratio: Tỉ lệ validation trong split.
+            test_ratio: Tỉ lệ test trong split.
+            force_regenerate_split: True để tạo lại split.json dù đã tồn tại.
+            virtual_samples_per_epoch: Số samples ảo mỗi epoch (0 = dùng số files thực).
+            cache_in_memory: True để load toàn bộ cubes vào RAM.
+            normalization_mode: 'per_image_minmax' hoặc 'global_fixed'.
+            normalization_scale: Sensor scale cho 'global_fixed' mode (mặc định 65535.0).
         """
         self.data_root = data_root
         self.patch_size = patch_size
@@ -550,10 +555,8 @@ class HyperspectralDataset(Dataset):
         self._image_cache = {}
 
         # --------------------------------------------------
-        # Create split if not exists
-        # --------------------------------------------------
         split_file = os.path.join(data_root, "split.json")
-        if force_regenerate_split or not os.path.exists(split_file):
+        if force_regenerate_split:
             generate_split(
                 data_root,
                 train_ratio=train_ratio,
@@ -612,14 +615,7 @@ class HyperspectralDataset(Dataset):
     # ------------------------------------------------------
 
     def _normalize(self, img):
-        """Internal helper for `normalize` operations.
-
-        Args:
-            img: Input parameter `img`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Normalize ảnh dùng normalization_mode và normalization_scale của instance."""
         return normalize_image(
             img,
             mode=self.normalization_mode,
@@ -643,14 +639,7 @@ class HyperspectralDataset(Dataset):
     # ------------------------------------------------------
 
     def _random_crop(self, img):
-        """Internal helper for `random_crop` operations.
-
-        Args:
-            img: Input parameter `img`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Crop ngẫu nhiên patch patch_size×patch_size từ ảnh; pad reflect nếu ảnh quá nhỏ."""
         h, w, _ = img.shape
 
         if h >= self.patch_size and w >= self.patch_size:
@@ -669,15 +658,7 @@ class HyperspectralDataset(Dataset):
     # ------------------------------------------------------
 
     def _augment(self, lr, hr):
-        """Internal helper for `augment` operations.
-
-        Args:
-            lr: Input parameter `lr`.
-            hr: Input parameter `hr`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Áp dụng random horizontal/vertical flip và 90° rotation đồng bộ lên cặp LR-HR."""
         if random.random() > 0.5:
             lr = np.flip(lr, axis=1).copy()
             hr = np.flip(hr, axis=1).copy()
@@ -695,14 +676,7 @@ class HyperspectralDataset(Dataset):
     # ------------------------------------------------------
 
     def __len__(self):
-        """Internal helper for `len__` operations.
-
-        Args:
-            None.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Trả về virtual_samples_per_epoch nếu > 0, ngược lại số files thực."""
         if self.virtual_samples_per_epoch > 0:
             return self.virtual_samples_per_epoch
         return len(self.image_paths)
@@ -710,13 +684,10 @@ class HyperspectralDataset(Dataset):
     # ------------------------------------------------------
 
     def __getitem__(self, idx):
-        """Internal helper for `getitem__` operations.
-
-        Args:
-            idx: Input parameter `idx`.
+        """Lấy một LR-HR pair — normalize, crop, augment, downsample.
 
         Returns:
-            Any: Output produced by this function.
+            tuple: (lr_tensor [C,H/s,W/s], hr_tensor [C,H,W]) float32.
         """
         real_idx = idx % len(self.image_paths)
         image_path = self.image_paths[real_idx]
@@ -750,8 +721,10 @@ class HyperspectralDataset(Dataset):
 # ==========================================================
 
 class HyperspectralTestDataset(Dataset):
-    """
-    Full image test dataset
+    """Dataset test cho Hyperspectral SR — trả về toàn ảnh đầy đủ (không crop).
+
+    __getitem__ trả về (lr_tensor, hr_tensor, sample_id_str) để dễ trace kết quả.
+    LR được tạo bằng bicubic downsample on-the-fly giống training dataset.
     """
 
     def __init__(self, data_root, split='test', upscale=4,
@@ -759,23 +732,20 @@ class HyperspectralTestDataset(Dataset):
                  force_regenerate_split=False, cache_in_memory=False,
                  normalization_mode='per_image_minmax', normalization_scale=65535.0):
 
-        """Initialize the `HyperspectralTestDataset` instance.
+        """Khởi tạo test dataset.
 
         Args:
-            data_root: Input parameter `data_root`.
-            split: Input parameter `split`.
-            upscale: Input parameter `upscale`.
-            split_seed: Input parameter `split_seed`.
-            train_ratio: Input parameter `train_ratio`.
-            val_ratio: Input parameter `val_ratio`.
-            test_ratio: Input parameter `test_ratio`.
-            force_regenerate_split: Input parameter `force_regenerate_split`.
-            cache_in_memory: Input parameter `cache_in_memory`.
-            normalization_mode: Input parameter `normalization_mode`.
-            normalization_scale: Input parameter `normalization_scale`.
-
-        Returns:
-            None: This method initializes state and returns no value.
+            data_root: Thư mục chứa hyperspectral data và split.json.
+            split: Split cần load — thường 'test' (mặc định).
+            upscale: SR scale factor để tạo LR (mặc định 4).
+            split_seed: Random seed cho split.json (mặc định 42).
+            train_ratio: Tỉ lệ training trong split.
+            val_ratio: Tỉ lệ validation trong split.
+            test_ratio: Tỉ lệ test trong split.
+            force_regenerate_split: True để tạo lại split.json.
+            cache_in_memory: True để load toàn bộ cubes vào RAM.
+            normalization_mode: 'per_image_minmax' hoặc 'global_fixed'.
+            normalization_scale: Sensor scale cho 'global_fixed' mode.
         """
         self.data_root = data_root
         self.split = split
@@ -791,7 +761,7 @@ class HyperspectralTestDataset(Dataset):
         self._image_cache = {}
 
         split_file = os.path.join(data_root, "split.json")
-        if force_regenerate_split or not os.path.exists(split_file):
+        if force_regenerate_split:
             generate_split(
                 data_root,
                 train_ratio=train_ratio,
@@ -839,27 +809,16 @@ class HyperspectralTestDataset(Dataset):
     # ------------------------------------------------------
 
     def __len__(self):
-        """Internal helper for `len__` operations.
-
-        Args:
-            None.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Số lượng ảnh trong test split."""
         return len(self.image_paths)
 
     # ------------------------------------------------------
 
     def __getitem__(self, idx):
-
-        """Internal helper for `getitem__` operations.
-
-        Args:
-            idx: Input parameter `idx`.
+        """Lấy một sample test đầy đủ — normalize và downsample toàn ảnh.
 
         Returns:
-            Any: Output produced by this function.
+            tuple: (lr_tensor [C,H/s,W/s], hr_tensor [C,H,W], sample_id str).
         """
         image_path = self.image_paths[idx]
         img = _load_split_entry_image(

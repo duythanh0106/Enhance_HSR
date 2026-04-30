@@ -1,10 +1,25 @@
 """
-Universal Train/Val/Test Split
-Works for .mat cubes and scene-folder band stacks (e.g. CAVE *_ms_XX.png)
+Train/Val/Test Split — tạo và quản lý split.json cho mọi loại dataset HSI.
 
-- No hardcoded scene names
-- Fully reproducible
-- Dataset-agnostic
+Hỗ trợ: .mat cubes (scipy/HDF5) và scene-folder band stacks (*_ms_XX.png).
+Dataset-agnostic, không hardcode tên scene.
+
+Hai chế độ hoạt động:
+  1. Multi-scene (CAVE, Harvard): shuffle toàn bộ files rồi chia theo ratios
+  2. Single-scene (Chikusei, Pavia): paper-style protocol — chia patch/strip từ một ảnh lớn
+     - Chikusei: 512×512 non-overlapping patches, 4 test + 2 val + còn lại train
+     - Pavia   : 120×714 horizontal strips, 3 test + 1 val + còn lại train
+
+QUAN TRỌNG:
+  - split.json được ghi atomic (tmp + os.replace) để tránh corrupt nếu crash
+  - Dataset.py KHÔNG tự generate split — phải chạy generate_split() hoặc prepare_data.py
+  - Crop entries trong split.json cho single-scene: {'path', 'id', 'crop': [top,left,h,w]}
+  - load_split() raise ValueError nếu split.json không tồn tại (không auto-create)
+
+Usage:
+    from data.splits import generate_split, load_split, get_split
+    generate_split('./dataset/Chikusei', seed=42)   # tạo split.json
+    train_list = get_split('./dataset/Chikusei', 'train')
 """
 
 import os
@@ -21,15 +36,10 @@ except ImportError:  # pragma: no cover - optional dependency at runtime
 
 
 def _validate_ratios(train_ratio, val_ratio, test_ratio):
-    """Internal helper for `validate_ratios` operations.
-
-    Args:
-        train_ratio: Input parameter `train_ratio`.
-        val_ratio: Input parameter `val_ratio`.
-        test_ratio: Input parameter `test_ratio`.
+    """Validate và parse train/val/test ratios — raise ValueError nếu không hợp lệ.
 
     Returns:
-        Any: Output produced by this function.
+        tuple: (dict ratios với keys train_ratio/val_ratio/test_ratio, float total_sum).
     """
     ratios = {
         "train_ratio": float(train_ratio),
@@ -46,16 +56,12 @@ def _validate_ratios(train_ratio, val_ratio, test_ratio):
 
 
 def _compute_split_sizes(total, train_ratio, val_ratio, test_ratio):
-    """Internal helper for `compute_split_sizes` operations.
+    """Tính số lượng samples cho mỗi split — phân phối phần dư theo fractional part lớn nhất.
 
-    Args:
-        total: Input parameter `total`.
-        train_ratio: Input parameter `train_ratio`.
-        val_ratio: Input parameter `val_ratio`.
-        test_ratio: Input parameter `test_ratio`.
+    Đảm bảo mỗi split có ít nhất 1 sample nếu ratio > 0 và total đủ.
 
     Returns:
-        Any: Output produced by this function.
+        dict: {'train': int, 'val': int, 'test': int} — số lượng samples mỗi split.
     """
     ratios, ratio_sum = _validate_ratios(train_ratio, val_ratio, test_ratio)
     keys = ["train", "val", "test"]
@@ -100,13 +106,12 @@ def _compute_split_sizes(total, train_ratio, val_ratio, test_ratio):
 
 
 def is_hyperspectral_mat(path):
-    """Execute `is_hyperspectral_mat`.
+    """Kiểm tra file .mat có chứa 3D hyperspectral cube không.
 
-    Args:
-        path: Input parameter `path`.
+    Thử scipy trước (MATLAB < v7.3), fallback sang h5py (MATLAB v7.3 / HDF5).
 
     Returns:
-        Any: Output produced by this function.
+        bool: True nếu file chứa ít nhất một 3D array numeric.
     """
     preferred_keys = {"rad", "cube", "ref", "data", "img"}
 
@@ -135,15 +140,7 @@ def is_hyperspectral_mat(path):
                 found_3d = False
 
                 def visitor(_, obj):
-                    """Execute `visitor`.
-
-                    Args:
-                        _: Input parameter `_`.
-                        obj: Input parameter `obj`.
-
-                    Returns:
-                        None: This function returns no value.
-                    """
+                    """Callback cho h5py.visititems — set found_3d=True nếu gặp dataset 3D."""
                     nonlocal found_3d
                     if found_3d:
                         return
@@ -446,18 +443,21 @@ def generate_split(
     seed=42,
     save=True,
 ):
-    """Execute `generate_split`.
+    """Tạo train/val/test split từ data_root và lưu atomic vào split.json.
+
+    Tự động dùng paper-style protocol cho Chikusei/Pavia (single .mat).
+    Với multi-scene: shuffle reproducible bằng seed rồi chia theo ratios.
 
     Args:
-        data_root: Input parameter `data_root`.
-        train_ratio: Input parameter `train_ratio`.
-        val_ratio: Input parameter `val_ratio`.
-        test_ratio: Input parameter `test_ratio`.
-        seed: Input parameter `seed`.
-        save: Input parameter `save`.
+        data_root: Thư mục chứa .mat files hoặc scene folders.
+        train_ratio: Tỉ lệ training (tổng không cần = 1.0).
+        val_ratio: Tỉ lệ validation.
+        test_ratio: Tỉ lệ test.
+        seed: Random seed cho shuffle reproducible (mặc định 42).
+        save: True để ghi split.json, False chỉ return dict.
 
     Returns:
-        Any: Output produced by this function.
+        dict: Split với keys 'train', 'val', 'test', 'seed', 'total', 'ratios'.
     """
 
     # 1️⃣ Scan paths
@@ -519,24 +519,26 @@ def generate_split(
             "test": test,
         }
 
-    # 4️⃣ Save split
+    # 4️⃣ Save split — write to .tmp then rename to prevent corrupt file on crash
     if save:
         split_path = os.path.join(data_root, "split.json")
-        with open(split_path, "w") as f:
+        tmp_path = split_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(split_dict, f, indent=2)
+        os.replace(tmp_path, split_path)
         print(f"✅ Split saved to {split_path}")
 
     return split_dict
 
 
 def load_split(data_root):
-    """Execute `load_split`.
+    """Đọc split.json từ data_root — raise ValueError nếu file không tồn tại.
 
     Args:
-        data_root: Input parameter `data_root`.
+        data_root: Thư mục chứa split.json.
 
     Returns:
-        Any: Output produced by this function.
+        dict: Split với keys 'train', 'val', 'test' (list paths hoặc crop entry dicts).
     """
 
     split_path = os.path.join(data_root, "split.json")
@@ -551,14 +553,14 @@ def load_split(data_root):
 
 
 def get_split(data_root, split="train"):
-    """Execute `get_split`.
+    """Trả về list entries cho một split cụ thể.
 
     Args:
-        data_root: Input parameter `data_root`.
-        split: Input parameter `split`.
+        data_root: Thư mục chứa split.json.
+        split: 'train', 'val', hoặc 'test'.
 
     Returns:
-        Any: Output produced by this function.
+        list: Paths (multi-scene) hoặc crop entry dicts (single-scene).
     """
 
     split_data = load_split(data_root)

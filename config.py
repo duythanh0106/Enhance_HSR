@@ -1,6 +1,18 @@
 """
-Configuration file for Hyperspectral Super-Resolution Training
-Chỉnh sửa file này để thay đổi hyperparameters
+Cấu hình training cho Hyperspectral Super-Resolution — chỉnh file này để thay đổi hyperparameters.
+
+Cung cấp hai lớp cấu hình:
+  Config             — base config với tất cả tùy chọn được comment đầy đủ
+  ConfigUniversalBest — preset khuyến nghị cho mọi dataset (Harvard/CAVE/Chikusei/Pavia)
+
+Dataset-specific configs:
+  ConfigCAVE, ConfigHarvard, ConfigChikusei, ConfigPavia — presets tối ưu cho từng dataset
+  ConfigBaseline* — same training config, chỉ đổi model_name sang ESSA_Original (ablation)
+
+QUAN TRỌNG:
+  - Hàm build_config(preset) là entry point chính — hỗ trợ suffix _x2/_x4
+  - Sau khi thay đổi data_root, gọi refresh_output_paths() để cập nhật tên experiment
+  - normalization_mode='global_fixed' + normalization_scale cần khớp với sensor range của dataset
 """
 
 import os
@@ -8,13 +20,13 @@ from datetime import datetime
 
 
 def infer_dataset_name(data_root):
-    """Execute `infer_dataset_name`.
+    """Trả về tên dataset từ đường dẫn data_root — dùng basename của thư mục.
 
     Args:
-        data_root: Input parameter `data_root`.
+        data_root: Đường dẫn thư mục dataset (str hoặc Path).
 
     Returns:
-        Any: Output produced by this function.
+        str: Tên dataset (basename của data_root); 'dataset' nếu không xác định được.
     """
     normalized = os.path.normpath(str(data_root or "")).strip()
     if not normalized or normalized == ".":
@@ -30,16 +42,7 @@ class Config:
         # ============================================================
         # DATASET SETTINGS
         # ============================================================
-        """Initialize the `Config` instance.
-
-        Args:
-            None.
-
-        Returns:
-            None: This method initializes state and returns no value.
-        """
         self.data_root = './data/Harvard'  # Root folder containing hyperspectral .mat files.
-        self.dataset_name = infer_dataset_name(self.data_root)  # Dataset label inferred from `data_root`.
         self.num_spectral_bands = 31  # Expected input/output spectral channels (auto-updated from data at runtime).
         # Split settings used to create/read `split.json`.
         self.split_seed = 42  # Random seed used for reproducible train/val/test split generation.
@@ -50,7 +53,7 @@ class Config:
         self.cache_in_memory = False  # Cache loaded hyperspectral cubes in RAM to reduce repeated disk I/O.
         # Normalization strategy for all train/val/test samples.
         # Modes: 'per_image_minmax' (legacy), 'global_fixed' (paper-style fixed sensor scale).
-        self.normalization_mode = 'per_image_minmax'
+        self.normalization_mode = 'per_image_minmax' # Default to fixed sensor scale (paper-style).
         self.normalization_scale = 65535.0
         
         # ============================================================
@@ -165,27 +168,13 @@ class Config:
         self.seed = 42  # Global randomness seed for reproducibility.
     
     def create_dirs(self):
-        """Execute `create_dirs`.
-
-        Args:
-            None.
-
-        Returns:
-            None: This function returns no value.
-        """
+        """Tạo thư mục checkpoint_dir, log_dir và log_dir/images nếu chưa tồn tại."""
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         os.makedirs(self.log_dir, exist_ok=True)
         os.makedirs(os.path.join(self.log_dir, 'images'), exist_ok=True)
 
     def refresh_output_paths(self):
-        """Execute `refresh_output_paths`.
-
-        Args:
-            None.
-
-        Returns:
-            None: This function returns no value.
-        """
+        """Cập nhật dataset_name, experiment_name, checkpoint_dir và log_dir từ data_root hiện tại."""
         self.dataset_name = infer_dataset_name(self.data_root)
         self.experiment_name = (
             f'{self.model_name}_{self.dataset_name}_x{self.upscale_factor}_{self.timestamp}'
@@ -193,95 +182,90 @@ class Config:
         self.checkpoint_dir = os.path.join('./checkpoints', self.experiment_name)
         self.log_dir = os.path.join('./logs', self.experiment_name)
     
-    def print_config(self):
-        """Execute `print_config`.
+    def print_config(self, print_fn=print):
+        """In toàn bộ cấu hình ra console theo nhóm (Dataset / Model / Training / Loss...).
 
         Args:
-            None.
-
-        Returns:
-            None: This function returns no value.
+            print_fn: Hàm in — mặc định là built-in print; truyền self._log để ghi đồng thời
+                      vào training.log.
         """
-        print("=" * 70)
-        print("CONFIGURATION")
-        print("=" * 70)
-        
-        print("\n📊 Dataset Settings:")
-        print(f"  Dataset: {self.dataset_name}")
-        print(f"  Data Root: {self.data_root}")
-        print(f"  Spectral Bands: {self.num_spectral_bands}")
-        print(f"  Split Seed: {self.split_seed}")
-        print(f"  Split Ratio (train/val/test): {self.train_ratio}/{self.val_ratio}/{self.test_ratio}")
-        print(f"  Regenerate Split: {self.regenerate_split}")
-        print(f"  Cache In Memory: {self.cache_in_memory}")
-        print(f"  Normalization: {self.normalization_mode} (scale={self.normalization_scale})")
-        
-        print("\n🏗️  Model Settings:")
-        print(f"  Model: {self.model_name}")
-        print(f"  Feature Dim: {self.feature_dim}")
-        print(f"  Upscale Factor: {self.upscale_factor}")
-        if self.model_name == 'ESSA_SSAM':
-            print(f"  Fusion Mode: {self.fusion_mode}")
-        
-        print("\n🎯 Training Settings:")
-        print(f"  Batch Size: {self.batch_size}")
-        print(f"  Patch Size: {self.patch_size}")
-        print(f"  Epochs: {self.num_epochs}")
-        print(f"  Train Virtual Samples/Epoch: {self.train_virtual_samples_per_epoch}")
-        print(f"  Val Virtual Samples/Epoch: {self.val_virtual_samples_per_epoch}")
-        print(f"  Grad Clip Norm: {self.gradient_clip_norm}")
-        print(f"  Learning Rate: {self.learning_rate}")
-        print(f"  Warmup Epochs: {self.warmup_epochs}")
-        print(f"  Warmup Start LR: {self.warmup_start_lr}")
-        print(f"  LR Scheduler: {self.lr_scheduler}")
-        print(f"  Use EMA: {self.use_ema}")
-        print(f"  Runtime Device Log: {self.log_device_runtime}")
-        if self.use_ema:
-            print(f"  EMA Decay: {self.ema_decay}")
-        
-        print("\n💡 Loss Settings:")
-        print(f"  Loss Type: {self.loss_type}")
-        if self.loss_type == 'combined':
-            print(f"  λ_L1: {self.lambda_l1}")
-            print(f"  λ_SAM: {self.lambda_sam}")
-            print(f"  λ_SSIM: {self.lambda_ssim}")
-            print(f"  Two-Phase Loss: {self.use_two_phase_loss}")
-            if self.use_two_phase_loss:
-                print(f"  Phase1 Ratio: {self.loss_phase1_ratio}")
-                print(f"  Phase1 SAM Scale: {self.loss_phase1_sam_scale}")
-                print(f"  Phase1 SSIM Scale: {self.loss_phase1_ssim_scale}")
-                print(f"  Phase Transition Epochs: {self.loss_phase_transition_epochs}")
+        print_fn("=" * 70)
+        print_fn("CONFIGURATION")
+        print_fn("=" * 70)
 
-        print("\n🏆 Best Checkpoint Selection:")
-        print(f"  Metric Mode: {self.best_selection_metric}")
+        print_fn("\n📊 Dataset Settings:")
+        print_fn(f"  Dataset: {self.dataset_name}")
+        print_fn(f"  Data Root: {self.data_root}")
+        print_fn(f"  Spectral Bands: {self.num_spectral_bands}")
+        print_fn(f"  Split Seed: {self.split_seed}")
+        print_fn(f"  Split Ratio (train/val/test): {self.train_ratio}/{self.val_ratio}/{self.test_ratio}")
+        print_fn(f"  Regenerate Split: {self.regenerate_split}")
+        print_fn(f"  Cache In Memory: {self.cache_in_memory}")
+        print_fn(f"  Normalization: {self.normalization_mode} (scale={self.normalization_scale})")
+
+        print_fn("\n🏗️  Model Settings:")
+        print_fn(f"  Model: {self.model_name}")
+        print_fn(f"  Feature Dim: {self.feature_dim}")
+        print_fn(f"  Upscale Factor: {self.upscale_factor}")
+        if self.model_name == 'ESSA_SSAM':
+            print_fn(f"  Fusion Mode: {self.fusion_mode}")
+
+        print_fn("\n🎯 Training Settings:")
+        print_fn(f"  Batch Size: {self.batch_size}")
+        print_fn(f"  Patch Size: {self.patch_size}")
+        print_fn(f"  Epochs: {self.num_epochs}")
+        print_fn(f"  Train Virtual Samples/Epoch: {self.train_virtual_samples_per_epoch}")
+        print_fn(f"  Val Virtual Samples/Epoch: {self.val_virtual_samples_per_epoch}")
+        print_fn(f"  Grad Clip Norm: {self.gradient_clip_norm}")
+        print_fn(f"  Learning Rate: {self.learning_rate}")
+        print_fn(f"  Warmup Epochs: {self.warmup_epochs}")
+        print_fn(f"  Warmup Start LR: {self.warmup_start_lr}")
+        print_fn(f"  LR Scheduler: {self.lr_scheduler}")
+        print_fn(f"  Use EMA: {self.use_ema}")
+        print_fn(f"  Runtime Device Log: {self.log_device_runtime}")
+        if self.use_ema:
+            print_fn(f"  EMA Decay: {self.ema_decay}")
+
+        print_fn("\n💡 Loss Settings:")
+        print_fn(f"  Loss Type: {self.loss_type}")
+        if self.loss_type == 'combined':
+            print_fn(f"  λ_L1: {self.lambda_l1}")
+            print_fn(f"  λ_SAM: {self.lambda_sam}")
+            print_fn(f"  λ_SSIM: {self.lambda_ssim}")
+            print_fn(f"  Two-Phase Loss: {self.use_two_phase_loss}")
+            if self.use_two_phase_loss:
+                print_fn(f"  Phase1 Ratio: {self.loss_phase1_ratio}")
+                print_fn(f"  Phase1 SAM Scale: {self.loss_phase1_sam_scale}")
+                print_fn(f"  Phase1 SSIM Scale: {self.loss_phase1_ssim_scale}")
+                print_fn(f"  Phase Transition Epochs: {self.loss_phase_transition_epochs}")
+
+        print_fn("\n🏆 Best Checkpoint Selection:")
+        print_fn(f"  Metric Mode: {self.best_selection_metric}")
         if self.best_selection_metric == 'composite':
             w_psnr = self.best_score_weights.get('psnr', 0.45)
             w_ssim = self.best_score_weights.get('ssim', 0.25)
             w_sam = self.best_score_weights.get('sam', 0.20)
             w_ergas = self.best_score_weights.get('ergas', 0.10)
-            print(f"  Weights (PSNR/SSIM/SAM/ERGAS): "
-                  f"{w_psnr}/{w_ssim}/{w_sam}/{w_ergas}")
-        print(f"  Early Stopping: {self.use_early_stopping}")
+            print_fn(f"  Weights (PSNR/SSIM/SAM/ERGAS): "
+                     f"{w_psnr}/{w_ssim}/{w_sam}/{w_ergas}")
+        print_fn(f"  Early Stopping: {self.use_early_stopping}")
         if self.use_early_stopping:
-            print(f"  Early Stop Patience: {self.early_stopping_patience}")
-            print(f"  Early Stop Min Delta: {self.early_stopping_min_delta}")
-            print(f"  Early Stop Start Epoch: {self.early_stopping_start_epoch}")
-        
-        print("\n📁 Output Settings:")
-        print(f"  Experiment: {self.experiment_name}")
-        print(f"  Checkpoint Dir: {self.checkpoint_dir}")
-        print(f"  Log Dir: {self.log_dir}")
-        
-        print("\n" + "=" * 70)
+            print_fn(f"  Early Stop Patience: {self.early_stopping_patience}")
+            print_fn(f"  Early Stop Min Delta: {self.early_stopping_min_delta}")
+            print_fn(f"  Early Stop Start Epoch: {self.early_stopping_start_epoch}")
+
+        print_fn("\n📁 Output Settings:")
+        print_fn(f"  Experiment: {self.experiment_name}")
+        print_fn(f"  Checkpoint Dir: {self.checkpoint_dir}")
+        print_fn(f"  Log Dir: {self.log_dir}")
+
+        print_fn("\n" + "=" * 70)
     
     def to_dict(self):
-        """Execute `to_dict`.
-
-        Args:
-            None.
+        """Trả về dict các config attributes — loại bỏ private fields và callable methods.
 
         Returns:
-            Any: Output produced by this function.
+            dict: Mapping tên attribute → giá trị, không bao gồm keys bắt đầu bằng '_'.
         """
         return {k: v for k, v in self.__dict__.items() 
                 if not k.startswith('_') and not callable(v)}
@@ -292,17 +276,9 @@ class Config:
 class ConfigBaseline(Config):
     """Configuration cho ESSA gốc (baseline)"""
     def __init__(self):
-        """Initialize the `ConfigBaseline` instance.
-
-        Args:
-            None.
-
-        Returns:
-            None: This method initializes state and returns no value.
-        """
         super().__init__()
         self.model_name = 'ESSA_Original'  # Switch to original ESSA architecture (baseline variant).
-        self.feature_dim = 128  # Baseline channel width used in the original setup.
+        self.feature_dim = 256  # Baseline channel width used in the original setup.
         self.loss_type = 'l1'  # Baseline objective for fair comparison.
         self.refresh_output_paths()
 
@@ -310,14 +286,6 @@ class ConfigBaseline(Config):
 class ConfigProposed(Config):
     """Configuration cho ESSA-SSAM đề xuất"""
     def __init__(self):
-        """Initialize the `ConfigProposed` instance.
-
-        Args:
-            None.
-
-        Returns:
-            None: This method initializes state and returns no value.
-        """
         super().__init__()
         self.model_name = 'ESSA_SSAM'  # Use improved ESSA with SSAM blocks.
         self.feature_dim = 256  # Wider features for stronger representation capacity.
@@ -332,17 +300,9 @@ class ConfigProposed(Config):
 class ConfigSpecTrans(Config):
     """Configuration cho ESSA-SSAM-SpecTrans (FINAL PROPOSED) ⭐"""
     def __init__(self):
-        """Initialize the `ConfigSpecTrans` instance.
-
-        Args:
-            None.
-
-        Returns:
-            None: This method initializes state and returns no value.
-        """
         super().__init__()
         self.model_name = 'ESSA_SSAM_SpecTrans'  # Use ESSA + SSAM + spectral transformer blocks.
-        self.feature_dim = 192  # Feature width for the proposed full model.
+        self.feature_dim = 256  # Feature width for the proposed full model.
         self.fusion_mode = 'sequential'  # SSAM fusion strategy.
         self.use_spectrans = True  # Enable spectral transformer refinement branch.
         self.spectrans_depth = 3  # Number of spectral transformer blocks.
@@ -356,13 +316,10 @@ class ConfigSpecTrans(Config):
 class ConfigAblation(Config):
     """Configuration cho ablation study"""
     def __init__(self, ablation_type='parallel'):
-        """Initialize the `ConfigAblation` instance.
+        """Khởi tạo ablation config.
 
         Args:
-            ablation_type: Input parameter `ablation_type`.
-
-        Returns:
-            None: This method initializes state and returns no value.
+            ablation_type: Fusion mode cần ablate — 'sequential', 'parallel', hoặc 'adaptive'.
         """
         super().__init__()
         self.model_name = 'ESSA_SSAM'  # Keep SSAM model while changing fusion behavior for ablation.
@@ -375,14 +332,6 @@ class ConfigAblation(Config):
 class ConfigLightweight(Config):
     """Configuration cho lightweight model (faster training)"""
     def __init__(self):
-        """Initialize the `ConfigLightweight` instance.
-
-        Args:
-            None.
-
-        Returns:
-            None: This method initializes state and returns no value.
-        """
         super().__init__()
         self.model_name = 'ESSA_SSAM'  # Lightweight preset still uses SSAM backbone.
         self.feature_dim = 128  # Internal channel width for this faster preset.
@@ -398,14 +347,6 @@ class ConfigUniversalBest(ConfigSpecTrans):
     và dataset 1 ảnh lớn (Chikusei/Pavia).
     """
     def __init__(self):
-        """Initialize the `ConfigUniversalBest` instance.
-
-        Args:
-            None.
-
-        Returns:
-            None: This method initializes state and returns no value.
-        """
         super().__init__()
 
         # Common robust defaults for cross-dataset training.
@@ -443,14 +384,7 @@ class ConfigUniversalBest(ConfigSpecTrans):
         self.refresh_output_paths()
 
     def apply_dataset_profile(self):
-        """Execute `apply_dataset_profile`.
-
-        Args:
-            None.
-
-        Returns:
-            None: This function returns no value.
-        """
+        """Điều chỉnh virtual_samples, cache, ema_decay theo loại dataset (single vs multi-scene)."""
         dataset_key = infer_dataset_name(self.data_root).lower()
         is_single_scene = ('chikusei' in dataset_key) or ('pavia' in dataset_key)
 
@@ -632,7 +566,14 @@ _X2_DATASETS = {'cave', 'harvard', 'chikusei', 'pavia', 'baseline_cave', 'baseli
 
 
 def build_config(preset='default'):
-    """Tạo config từ preset. Hỗ trợ suffix _x2/_x4, ví dụ 'cave_x2'."""
+    """Tạo Config object từ preset name — hỗ trợ suffix _x2/_x4, ví dụ 'cave_x2'.
+
+    Args:
+        preset: Tên preset (xem CONFIG_PRESETS) — có thể kèm suffix '_x2' hoặc '_x4'.
+
+    Returns:
+        Config: Instance config đã được khởi tạo với profile tương ứng.
+    """
     key = str(preset or 'default').lower()
 
     scale = None

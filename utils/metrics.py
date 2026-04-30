@@ -1,6 +1,17 @@
 """
-Metrics for Hyperspectral Image Super-Resolution
-Bao gồm: PSNR, SSIM, SAM, ERGAS - Các metrics quan trọng cho khóa luận
+Metrics for Hyperspectral Image Super-Resolution — đo chất lượng ảnh SR.
+
+Bao gồm 4 metrics chuẩn cho HSI-SR:
+  - PSNR  : Peak Signal-to-Noise Ratio (dB) — higher is better
+  - SSIM  : Structural Similarity Index — higher is better, max=1
+  - SAM   : Spectral Angle Mapper (degrees) — lower is better, 0° = perfect
+  - ERGAS : Erreur Relative Globale Adimensionnelle de Synthèse — lower is better
+
+QUAN TRỌNG:
+  - Tất cả hàm expect tensor [B,C,H,W] hoặc [C,H,W] — tự động unsqueeze batch
+  - data_range mặc định = 1.0 (ảnh đã normalize về [0,1])
+  - SAM và ERGAS là lower-is-better; PSNR và SSIM là higher-is-better
+  - MetricsCalculator tính cả 4 metrics một lúc — dùng trong evaluate.py/train.py
 """
 
 import torch
@@ -10,15 +21,15 @@ import math
 
 
 def calculate_psnr(img1, img2, data_range=1.0):
-    """Execute `calculate_psnr`.
+    """Tính PSNR (Peak Signal-to-Noise Ratio) giữa hai ảnh — higher is better.
 
     Args:
-        img1: Input parameter `img1`.
-        img2: Input parameter `img2`.
-        data_range: Input parameter `data_range`.
+        img1: Tensor [B,C,H,W] hoặc [C,H,W], đã normalize về [0,1].
+        img2: Tensor cùng shape với img1.
+        data_range: Giá trị max của data (mặc định 1.0).
 
     Returns:
-        Any: Output produced by this function.
+        float: PSNR tính bằng dB; inf nếu hai ảnh giống hệt nhau (MSE=0).
     """
     if img1.dim() == 3:
         img1 = img1.unsqueeze(0)
@@ -35,16 +46,19 @@ def calculate_psnr(img1, img2, data_range=1.0):
 
 
 def calculate_ssim(img1, img2, window_size=11, data_range=1.0):
-    """Execute `calculate_ssim`.
+    """Tính SSIM (Structural Similarity Index) — higher is better, max=1.
+
+    Dùng Gaussian window 11×11 (chuẩn SSIM paper); tính trên tất cả channels rồi
+    lấy trung bình. Chạy trong float32 để tránh AMP precision issues.
 
     Args:
-        img1: Input parameter `img1`.
-        img2: Input parameter `img2`.
-        window_size: Input parameter `window_size`.
-        data_range: Input parameter `data_range`.
+        img1: Tensor [B,C,H,W] hoặc [C,H,W].
+        img2: Tensor cùng shape với img1.
+        window_size: Kích thước Gaussian kernel (mặc định 11).
+        data_range: Giá trị max (mặc định 1.0).
 
     Returns:
-        Any: Output produced by this function.
+        float: SSIM trong [0, 1].
     """
     if img1.dim() == 3:
         img1 = img1.unsqueeze(0)
@@ -91,15 +105,18 @@ def calculate_ssim(img1, img2, window_size=11, data_range=1.0):
 
 
 def calculate_sam(img1, img2, eps=1e-8):
-    """Execute `calculate_sam`.
+    """Tính SAM (Spectral Angle Mapper) trung bình — lower is better, 0° = perfect.
+
+    Đo góc giữa các spectral signatures tại mỗi pixel; phản ánh độ trung thực
+    phổ quan trọng hơn PSNR cho hyperspectral images.
 
     Args:
-        img1: Input parameter `img1`.
-        img2: Input parameter `img2`.
-        eps: Input parameter `eps`.
+        img1: Tensor [B,C,H,W] hoặc [C,H,W].
+        img2: Tensor cùng shape với img1.
+        eps: Epsilon tránh div/0 khi chuẩn hóa (mặc định 1e-8).
 
     Returns:
-        Any: Output produced by this function.
+        float: Góc SAM trung bình (degrees) trên tất cả pixels và batch.
     """
     if img1.dim() == 3:
         img1 = img1.unsqueeze(0)
@@ -130,15 +147,19 @@ def calculate_sam(img1, img2, eps=1e-8):
 
 
 def calculate_ergas(img1, img2, scale=4):
-    """Execute `calculate_ergas`.
+    """Tính ERGAS (Erreur Relative Globale Adimensionnelle de Synthèse) — lower is better.
+
+    Metric tổng hợp đo lỗi tương đối trên toàn bộ spectral bands, có scale
+    factor để normalize theo upscale ratio. img1 = GT, img2 = predicted
+    (thứ tự quan trọng cho mean_ref calculation).
 
     Args:
-        img1: Input parameter `img1`.
-        img2: Input parameter `img2`.
-        scale: Input parameter `scale`.
+        img1: HR reference tensor [B,C,H,W] hoặc [C,H,W].
+        img2: SR predicted tensor (cùng shape với img1).
+        scale: Upscale factor để chuẩn hóa (mặc định 4).
 
     Returns:
-        Any: Output produced by this function.
+        float: ERGAS — lower is better; 0 = perfect reconstruction.
     """
     if img1.dim() == 3:
         img1 = img1.unsqueeze(0)
@@ -171,35 +192,28 @@ def calculate_ergas(img1, img2, scale=4):
 
 
 class MetricsCalculator:
+    """Calculator tổng hợp — tính cả 4 metrics (PSNR/SSIM/SAM/ERGAS) một lần.
+
+    Dùng trong evaluate.py và train.py validate() để tránh lặp code.
     """
-    Class để tính tất cả metrics một lần
-    Tiện cho evaluation
-    """
-    
+
     def __init__(self, data_range=1.0):
-        """Initialize the `MetricsCalculator` instance.
-
-        Args:
-            data_range: Input parameter `data_range`.
-
-        Returns:
-            None: This method initializes state and returns no value.
-        """
+        """Khởi tạo calculator với data_range (mặc định 1.0 cho ảnh đã normalize)."""
         self.data_range = data_range
     
     def calculate_all(self, pred, target, scale=4):
-        """Execute `calculate_all`.
+        """Tính đồng thời PSNR, SSIM, SAM, ERGAS không có gradient.
 
         Args:
-            pred: Input parameter `pred`.
-            target: Input parameter `target`.
-            scale: Input parameter `scale`.
+            pred: SR predicted tensor [B,C,H,W].
+            target: HR reference tensor [B,C,H,W].
+            scale: Upscale factor dùng cho ERGAS (mặc định 4).
 
         Returns:
-            Any: Output produced by this function.
+            dict: Keys 'PSNR', 'SSIM', 'SAM', 'ERGAS' (float).
         """
         metrics = {}
-        
+
         with torch.no_grad():
             pred = pred.float()
             target = target.float()
@@ -207,17 +221,17 @@ class MetricsCalculator:
             metrics['SSIM'] = calculate_ssim(pred, target, data_range=self.data_range)
             metrics['SAM'] = calculate_sam(pred, target)
             metrics['ERGAS'] = calculate_ergas(target, pred, scale)
-        
+
         return metrics
     
     def format_metrics(self, metrics):
-        """Execute `format_metrics`.
+        """Format dict metrics thành string một dòng để log/print.
 
         Args:
-            metrics: Input parameter `metrics`.
+            metrics: Dict từ calculate_all() với keys PSNR/SSIM/SAM/ERGAS.
 
         Returns:
-            Any: Output produced by this function.
+            str: Dạng "PSNR: 34.21 dB | SSIM: 0.9234 | SAM: 2.8123° | ERGAS: 2.1045".
         """
         return (f"PSNR: {metrics['PSNR']:.2f} dB | "
                 f"SSIM: {metrics['SSIM']:.4f} | "

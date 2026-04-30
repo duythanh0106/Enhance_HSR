@@ -1,6 +1,18 @@
 """
-Visualization utilities cho Hyperspectral SR
-Dùng cho báo cáo khóa luận và paper
+Visualization utilities cho Hyperspectral SR — vẽ biểu đồ cho báo cáo và paper.
+
+Cung cấp 5 loại visualization:
+  - Spectral curves   : so sánh phổ LR/SR/GT tại một pixel cụ thể
+  - RGB comparison    : so sánh ảnh RGB (band 25/15/5) LR/SR/GT side-by-side
+  - Attention maps    : hiển thị spatial và spectral attention weights
+  - Training curves   : vẽ loss + PSNR/SSIM/SAM theo epoch
+  - Metrics bar chart : so sánh nhiều model trên cùng trục
+
+QUAN TRỌNG:
+  - Tất cả hàm nhận numpy array [C,H,W] hoặc torch tensor — tự convert
+  - save_path=None → hiển thị interactive; save_path có path → lưu PNG (300 dpi)
+  - plot_spectral_curves giả định upscale=4 khi tính LR pixel coords
+  - Dùng bởi evaluate.py, plot_training_log.py, và các script trong visualize/
 """
 
 import matplotlib.pyplot as plt
@@ -9,17 +21,20 @@ import torch
 
 
 def plot_spectral_curves(lr, sr, hr, pixel_coords, save_path=None):
-    """Execute `plot_spectral_curves`.
+    """Vẽ spectral signatures tại một pixel — so sánh LR/SR/GT.
+
+    Trục X = wavelength (nm, ước tính 400-700nm cho 31 bands CAVE).
+    LR pixel coords được tính bằng cách chia 4 (giả định upscale=4).
 
     Args:
-        lr: Input parameter `lr`.
-        sr: Input parameter `sr`.
-        hr: Input parameter `hr`.
-        pixel_coords: Input parameter `pixel_coords`.
-        save_path: Input parameter `save_path`.
+        lr: Array/tensor [C, H, W] — low-resolution image.
+        sr: Array/tensor [C, H, W] — super-resolved image.
+        hr: Array/tensor [C, H, W] — ground truth high-resolution.
+        pixel_coords: Tuple (y, x) trong không gian HR.
+        save_path: Đường dẫn PNG; None thì show interactive.
 
     Returns:
-        None: This function returns no value.
+        None
     """
     # Convert to numpy if torch tensor
     if torch.is_tensor(lr):
@@ -64,16 +79,19 @@ def plot_spectral_curves(lr, sr, hr, pixel_coords, save_path=None):
 
 
 def plot_rgb_comparison(lr, sr, hr, save_path=None):
-    """Execute `plot_rgb_comparison`.
+    """Vẽ false-color RGB so sánh LR (bicubic up) / SR / GT side-by-side.
+
+    Dùng bands 25/15/5 làm R/G/B (approximate red/green/blue cho CAVE 31 bands).
+    LR được upsample bằng scipy zoom order=1 để cùng kích thước với SR/HR.
 
     Args:
-        lr: Input parameter `lr`.
-        sr: Input parameter `sr`.
-        hr: Input parameter `hr`.
-        save_path: Input parameter `save_path`.
+        lr: Array/tensor [C, H, W] (C >= 26) — low-resolution image.
+        sr: Array/tensor [C, H, W] — super-resolved image.
+        hr: Array/tensor [C, H, W] — ground truth high-resolution.
+        save_path: Đường dẫn PNG; None thì show interactive.
 
     Returns:
-        Any: Output produced by this function.
+        None
     """
     # Convert to numpy
     if torch.is_tensor(lr):
@@ -85,14 +103,7 @@ def plot_rgb_comparison(lr, sr, hr, save_path=None):
     
     # Extract RGB bands
     def to_rgb(img):
-        """Execute `to_rgb`.
-
-        Args:
-            img: Input parameter `img`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Trích bands 25/15/5 thành RGB [H,W,3], clip về [0,1]."""
         r = img[25, :, :]
         g = img[15, :, :]
         b = img[5, :, :]
@@ -135,14 +146,16 @@ def plot_rgb_comparison(lr, sr, hr, save_path=None):
 
 
 def plot_attention_maps(attention_maps, save_path=None):
-    """Execute `plot_attention_maps`.
+    """Visualize spatial attention (heatmap) và spectral attention (bar chart).
 
     Args:
-        attention_maps: Input parameter `attention_maps`.
-        save_path: Input parameter `save_path`.
+        attention_maps: Dict với keys 'spatial' và/hoặc 'spectral':
+            - 'spatial': tensor [B,1,H,W] — spatial importance map.
+            - 'spectral': tensor [B,C,1,1] — per-band weight.
+        save_path: Đường dẫn PNG; None thì show interactive.
 
     Returns:
-        None: This function returns no value.
+        None
     """
     spatial_att = attention_maps.get('spatial', None)
     spectral_att = attention_maps.get('spectral', None)
@@ -283,14 +296,14 @@ def plot_training_curves(train_losses, val_metrics, save_path=None):
 
 
 def plot_metrics_comparison(models_metrics, save_path=None):
-    """Execute `plot_metrics_comparison`.
+    """Vẽ bar chart so sánh PSNR/SSIM/SAM/ERGAS giữa nhiều model.
 
     Args:
-        models_metrics: Input parameter `models_metrics`.
-        save_path: Input parameter `save_path`.
+        models_metrics: Dict mapping model_name → {'PSNR': float, 'SSIM': float, 'SAM': float, 'ERGAS': float}.
+        save_path: Đường dẫn PNG; None thì show interactive.
 
     Returns:
-        None: This function returns no value.
+        None
     """
     model_names = list(models_metrics.keys())
     metrics_names = ['PSNR', 'SSIM', 'SAM', 'ERGAS']

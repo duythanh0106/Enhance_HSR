@@ -18,15 +18,15 @@ except ImportError:  # pragma: no cover
     optuna = None
 
 def configure_for_tuning(cfg, args, trial):
-    """Execute `configure_for_tuning`.
+    """Cập nhật cfg với search space từ Optuna trial và CLI args.
 
     Args:
-        cfg: Input parameter `cfg`.
-        args: Input parameter `args`.
-        trial: Input parameter `trial`.
+        cfg: Config object sẽ được modify in-place.
+        args: Parsed argparse Namespace (epochs, max_virtual_*, data_root, v.v.).
+        trial: Optuna Trial object để sample hyperparameters.
 
     Returns:
-        Any: Output produced by this function.
+        Config: cfg đã được cập nhật (cùng object, trả về để chaining).
     """
     if args.data_root:
         cfg.data_root = args.data_root
@@ -83,14 +83,7 @@ def configure_for_tuning(cfg, args, trial):
 
 
 def main():
-    """Execute the main entry-point workflow.
-
-    Args:
-        None.
-
-    Returns:
-        Any: Output produced by this function.
-    """
+    """Parse CLI args, tạo Optuna study và chạy hyperparameter search."""
     parser = argparse.ArgumentParser(description="Optuna tuning for HSI-SR training")
     parser.add_argument(
         "--config",
@@ -125,14 +118,7 @@ def main():
     )
 
     def objective(trial):
-        """Execute `objective`.
-
-        Args:
-            trial: Input parameter `trial`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Train một run với hyperparams từ trial; trả về best_score."""
         cfg = build_config(args.config)
         cfg = configure_for_tuning(cfg, args, trial)
         trainer = Trainer(cfg)

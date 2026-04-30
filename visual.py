@@ -35,11 +35,13 @@ DPI = 200
 
 # ── Helpers ───────────────────────────────────────────────────
 def safe_name():
+    """Trả về (dataset_safe, scale_safe) — tên đã làm sạch dùng cho tên file output."""
     d = Path(str(DATASET)).name.replace(' ','_').replace('/','_').replace('.','')
     s = str(SCALE).replace('×','x').replace('/','_').replace('.','')
     return d, s
 
 def load_rgb(folder, scene, suffix):
+    """Load ảnh RGB từ folder/images/scene/*suffix; tự động gamma stretch nếu tối."""
     p = folder / "images" / scene
     files = list(p.glob(f"*{suffix}"))
     if not files:
@@ -101,6 +103,7 @@ def load_hr(folder, scene):
 
 # ── Figure 1: RGB full + zoom (style ESSAformer Figure 3/5) ──
 def fig_visual_comparison():
+    """Tạo và lưu Figure so sánh ảnh RGB full + zoom: ESSA gốc / Đề xuất / GT."""
     print("Tạo Figure so sánh ảnh RGB...")
 
     lr       = load_rgb(ESSA_DIR, SCENE, "_LR_RGB.png")
@@ -175,6 +178,7 @@ def fig_visual_comparison():
 
 # ── Figure 2: Spectral Profile (style ESSAformer Figure 4/8-13) ──
 def fig_spectral():
+    """Tạo và lưu Figure spectral profile tại các pixel đại diện: ESSA / Đề xuất / GT."""
     print("Tạo Figure spectral profile...")
 
     sr_essa = load_sr_npy(ESSA_DIR, SCENE)

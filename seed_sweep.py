@@ -40,13 +40,13 @@ from utils.time_utils import format_duration
 
 
 def parse_seeds(text: str):
-    """Execute `parse_seeds`.
+    """Parse chuỗi seeds dạng "7,11,19" thành list int.
 
     Args:
-        text: Input parameter `text`.
+        text: Chuỗi seeds phân cách bởi dấu phẩy.
 
     Returns:
-        Any: Output produced by this function.
+        list[int]: List các seed đã parse; raise ValueError nếu rỗng.
     """
     seeds = []
     for token in (text or "").split(","):
@@ -61,19 +61,19 @@ def parse_seeds(text: str):
 
 @torch.no_grad()
 def evaluate_full_image_split(model, dataloader, scale, device, crop_border, chop_patch_size, chop_overlap):
-    """Execute `evaluate_full_image_split`.
+    """Đánh giá model trên toàn bộ ảnh trong dataloader, trả về metrics trung bình.
 
     Args:
-        model: Input parameter `model`.
-        dataloader: Input parameter `dataloader`.
-        scale: Input parameter `scale`.
-        device: Input parameter `device`.
-        crop_border: Input parameter `crop_border`.
-        chop_patch_size: Input parameter `chop_patch_size`.
-        chop_overlap: Input parameter `chop_overlap`.
+        model: SR model đã load weights.
+        dataloader: DataLoader trả về (lr, hr, filepath) tuples.
+        scale: Upscale factor.
+        device: torch.device để chạy inference.
+        crop_border: Nếu True, crop scale pixels trên mỗi cạnh trước metrics.
+        chop_patch_size: Patch size LR cho sliding-window inference.
+        chop_overlap: Overlap giữa các patches.
 
     Returns:
-        Any: Output produced by this function.
+        dict: PSNR, SSIM, SAM, ERGAS trung bình, num_images và inference_time_sec.
     """
     model.eval()
     psnr_list = []
@@ -125,15 +125,15 @@ def evaluate_full_image_split(model, dataloader, scale, device, crop_border, cho
 
 
 def load_val_dataset(config_dict, data_root, split_name):
-    """Execute `load_val_dataset`.
+    """Load HyperspectralTestDataset cho split_name dựa trên thông số trong config_dict.
 
     Args:
-        config_dict: Input parameter `config_dict`.
-        data_root: Input parameter `data_root`.
-        split_name: Input parameter `split_name`.
+        config_dict: Dict config (từ checkpoint hoặc build_config).
+        data_root: Đường dẫn tới thư mục dữ liệu.
+        split_name: Tên split cần load ('val' hoặc 'test').
 
     Returns:
-        Any: Output produced by this function.
+        HyperspectralTestDataset: Dataset đã load.
     """
     split_kwargs = build_split_kwargs(
         upscale=config_dict.get("upscale_factor", 4),
@@ -155,16 +155,16 @@ def load_val_dataset(config_dict, data_root, split_name):
 
 
 def evaluate_checkpoint_on_full_image_val(checkpoint_path, data_root, split_name, args):
-    """Execute `evaluate_checkpoint_on_full_image_val`.
+    """Load checkpoint và chạy full-image evaluation trên split_name.
 
     Args:
-        checkpoint_path: Input parameter `checkpoint_path`.
-        data_root: Input parameter `data_root`.
-        split_name: Input parameter `split_name`.
-        args: Input parameter `args`.
+        checkpoint_path: Đường dẫn file .pth checkpoint.
+        data_root: Đường dẫn tới thư mục dữ liệu.
+        split_name: Tên split ('val' hoặc 'test').
+        args: Parsed argparse Namespace (chứa eval_device, no_crop_border, v.v.).
 
     Returns:
-        Any: Output produced by this function.
+        tuple: (metrics_dict, config_dict) — metrics và config của checkpoint.
     """
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
     config_dict = checkpoint.get("config", {})
@@ -211,14 +211,14 @@ def evaluate_checkpoint_on_full_image_val(checkpoint_path, data_root, split_name
 
 
 def run_one_seed(args, seed):
-    """Execute `run_one_seed`.
+    """Train và evaluate một seed — trả về dict kết quả để xếp hạng.
 
     Args:
-        args: Input parameter `args`.
-        seed: Input parameter `seed`.
+        args: Parsed argparse Namespace với cấu hình sweep.
+        seed: Training seed cần chạy.
 
     Returns:
-        Any: Output produced by this function.
+        dict: Kết quả gồm seed, checkpoint path, rank_score và các metrics.
     """
     seed_start = time.time()
     cfg = build_config(args.config)
@@ -292,16 +292,16 @@ def run_one_seed(args, seed):
 
 
 def save_results(output_dir, results, total_runtime_sec, args):
-    """Execute `save_results`.
+    """Lưu kết quả sweep ra JSON, CSV, meta JSON và summary TXT.
 
     Args:
-        output_dir: Input parameter `output_dir`.
-        results: Input parameter `results`.
-        total_runtime_sec: Input parameter `total_runtime_sec`.
-        args: Input parameter `args`.
+        output_dir: Thư mục đầu ra.
+        results: List dict kết quả từng seed (đã sắp xếp theo rank_score).
+        total_runtime_sec: Tổng thời gian sweep (giây).
+        args: Parsed argparse Namespace (dùng để ghi metadata).
 
     Returns:
-        Any: Output produced by this function.
+        tuple: (json_path, meta_path, csv_path, txt_path) — đường dẫn các file đã lưu.
     """
     os.makedirs(output_dir, exist_ok=True)
     json_path = os.path.join(output_dir, "seed_sweep_results.json")
@@ -379,14 +379,7 @@ def save_results(output_dir, results, total_runtime_sec, args):
 
 
 def main():
-    """Execute the main entry-point workflow.
-
-    Args:
-        None.
-
-    Returns:
-        None: This function returns no value.
-    """
+    """Parse CLI args, chạy seed sweep tuần tự và lưu kết quả xếp hạng."""
     parser = argparse.ArgumentParser(description="Sweep seeds for HSI-SR training")
     parser.add_argument(
         "--config",

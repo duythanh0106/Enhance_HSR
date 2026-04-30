@@ -1,6 +1,20 @@
 """
-Loss Functions for Hyperspectral Image Super-Resolution
-Bao gồm: L1, L2, SAM Loss, Combined Loss
+Loss functions cho Hyperspectral Image Super-Resolution.
+
+Cung cấp 6 loss classes, tất cả return (loss_tensor, loss_dict) để dễ unpack:
+  - L1Loss             : pixel-wise L1 reconstruction
+  - L2Loss             : pixel-wise MSE reconstruction
+  - SAMLoss            : Spectral Angle Mapper — giữ hình dạng phổ
+  - SSIMLoss           : Structural Similarity — giữ texture/structure
+  - CombinedLoss       : λ_L1·L1 + λ_SAM·SAM + λ_SSIM·SSIM (recommended)
+  - AdaptiveCombinedLoss: learnable weights thông qua log-variance uncertainty
+
+QUAN TRỌNG:
+  - Tất cả forward() đều return (loss_tensor, loss_dict) — không có exception
+    (Liskov Substitution: train.py luôn unpack cả hai giá trị)
+  - CombinedLoss có set_weights() để two-phase loss scheduling trong train.py
+  - SAMLoss: input [B,C,H,W]; đo góc spectral trên từng pixel, lấy mean
+  - loss_dict luôn có key 'total' cùng với các component keys
 """
 
 import torch
@@ -10,88 +24,42 @@ import math
 
 
 class L1Loss(nn.Module):
-    """Standard L1 Loss"""
+    """L1 pixel reconstruction loss — mean absolute error."""
+
     def __init__(self):
-        """Initialize the `L1Loss` instance.
-
-        Args:
-            None.
-
-        Returns:
-            None: This method initializes state and returns no value.
-        """
         super(L1Loss, self).__init__()
         self.loss = nn.L1Loss()
     
     def forward(self, pred, target):
-        """Run the forward computation for this module.
-
-        Args:
-            pred: Input parameter `pred`.
-            target: Input parameter `target`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
-        return self.loss(pred, target)
+        loss = self.loss(pred, target)
+        return loss, {'total': loss.item(), 'l1': loss.item()}
 
 
 class L2Loss(nn.Module):
-    """Standard L2 (MSE) Loss"""
+    """L2 (MSE) pixel reconstruction loss — mean squared error."""
+
     def __init__(self):
-        """Initialize the `L2Loss` instance.
-
-        Args:
-            None.
-
-        Returns:
-            None: This method initializes state and returns no value.
-        """
         super(L2Loss, self).__init__()
         self.loss = nn.MSELoss()
-    
+
     def forward(self, pred, target):
-        """Run the forward computation for this module.
-
-        Args:
-            pred: Input parameter `pred`.
-            target: Input parameter `target`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
-        return self.loss(pred, target)
+        loss = self.loss(pred, target)
+        return loss, {'total': loss.item(), 'l2': loss.item()}
 
 
 class SAMLoss(nn.Module):
+    """Spectral Angle Mapper loss — đo góc giữa spectral signatures.
+
+    Quan trọng hơn L1/L2 cho HSI vì giữ nguyên hình dạng phổ.
+    Loss = mean SAM (radians) trên tất cả pixels; lower = better.
     """
-    Spectral Angle Mapper (SAM) Loss
-    Đặc biệt quan trọng cho hyperspectral images!
-    
-    SAM đo góc giữa spectral signatures - giữ nguyên hình dạng phổ
-    """
+
     def __init__(self, eps=1e-8):
-        """Initialize the `SAMLoss` instance.
-
-        Args:
-            eps: Input parameter `eps`.
-
-        Returns:
-            None: This method initializes state and returns no value.
-        """
         super(SAMLoss, self).__init__()
         self.eps = eps
     
     def forward(self, pred, target):
-        """Run the forward computation for this module.
-
-        Args:
-            pred: Input parameter `pred`.
-            target: Input parameter `target`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Tính SAM loss — Input [B,C,H,W], Output (loss_tensor, {'total':, 'sam':})."""
         # Reshape to [B, C, H*W]
         B, C, H, W = pred.shape
         pred_flat = pred.reshape(B, C, -1)
@@ -112,23 +80,22 @@ class SAMLoss(nn.Module):
         # Calculate angle (in radians)
         sam = torch.acos(cos_theta)
         
-        # Return mean SAM
-        return torch.mean(sam)
+        loss = torch.mean(sam)
+        return loss, {'total': loss.item(), 'sam': loss.item()}
 
 
 class SSIMLoss(nn.Module):
+    """SSIM structural similarity loss — 1 - SSIM_mean; lower = better reconstruction.
+
+    Dùng Gaussian window 11×11; Gaussian kernel được đăng ký là buffer để di chuyển
+    cùng model sang device (CPU/CUDA/MPS) tự động.
     """
-    SSIM Loss for better perceptual quality
-    """
+
     def __init__(self, window_size=11, data_range=1.0):
-        """Initialize the `SSIMLoss` instance.
+        """Khởi tạo Gaussian kernel và SSIM constants C1, C2.
 
-        Args:
-            window_size: Input parameter `window_size`.
-            data_range: Input parameter `data_range`.
-
-        Returns:
-            None: This method initializes state and returns no value.
+        Input: window_size — kích thước kernel (mặc định 11)
+               data_range  — giá trị max data (mặc định 1.0)
         """
         super(SSIMLoss, self).__init__()
         self.window_size = window_size
@@ -148,15 +115,7 @@ class SSIMLoss(nn.Module):
         self.C2 = (0.03 * data_range) ** 2
     
     def forward(self, pred, target):
-        """Run the forward computation for this module.
-
-        Args:
-            pred: Input parameter `pred`.
-            target: Input parameter `target`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Tính SSIM loss — Input [B,C,H,W], Output (loss_tensor, {'total':, 'ssim':})."""
         C = pred.size(1)
         window = self.window.expand(C, 1, self.window_size, self.window_size).contiguous()
         window = window.to(pred.device)
@@ -178,31 +137,23 @@ class SSIMLoss(nn.Module):
         ssim_map = ((2 * mu1_mu2 + self.C1) * (2 * sigma12 + self.C2)) / \
                    ((mu1_sq + mu2_sq + self.C1) * (sigma1_sq + sigma2_sq + self.C2))
         
-        # Return 1 - SSIM as loss
-        return 1 - ssim_map.mean()
+        loss = 1 - ssim_map.mean()
+        return loss, {'total': loss.item(), 'ssim': loss.item()}
 
 
 class CombinedLoss(nn.Module):
+    """Loss đề xuất: λ_L1·L1 + λ_SAM·SAM + λ_SSIM·SSIM.
+
+    Kết hợp 3 thành phần bổ trợ nhau:
+      L1   — pixel accuracy (dominant term)
+      SAM  — spectral fidelity (spectral shape preservation)
+      SSIM — structural similarity (texture/edge quality)
+
+    set_weights() được gọi bởi two-phase loss scheduler trong train.py.
     """
-    Combined Loss = λ1*L1 + λ2*SAM + λ3*SSIM
-    
-    Đây là loss function được đề xuất trong khóa luận!
-    Kết hợp:
-    - L1: Pixel-wise accuracy
-    - SAM: Spectral fidelity
-    - SSIM: Structural similarity
-    """
+
     def __init__(self, lambda_l1=1.0, lambda_sam=0.1, lambda_ssim=0.5):
-        """Initialize the `CombinedLoss` instance.
-
-        Args:
-            lambda_l1: Input parameter `lambda_l1`.
-            lambda_sam: Input parameter `lambda_sam`.
-            lambda_ssim: Input parameter `lambda_ssim`.
-
-        Returns:
-            None: This method initializes state and returns no value.
-        """
+        """Khởi tạo với trọng số ban đầu; mặc định: L1=1.0, SAM=0.1, SSIM=0.5."""
         super(CombinedLoss, self).__init__()
         
         self.lambda_l1 = lambda_l1
@@ -214,15 +165,9 @@ class CombinedLoss(nn.Module):
         self.ssim_loss = SSIMLoss()
 
     def set_weights(self, lambda_l1=None, lambda_sam=None, lambda_ssim=None):
-        """Execute `set_weights`.
+        """Cập nhật trọng số loss on-the-fly — dùng bởi two-phase scheduler.
 
-        Args:
-            lambda_l1: Input parameter `lambda_l1`.
-            lambda_sam: Input parameter `lambda_sam`.
-            lambda_ssim: Input parameter `lambda_ssim`.
-
-        Returns:
-            None: This function returns no value.
+        Chỉ cập nhật các trọng số được truyền vào (None = giữ nguyên).
         """
         if lambda_l1 is not None:
             self.lambda_l1 = float(lambda_l1)
@@ -232,14 +177,7 @@ class CombinedLoss(nn.Module):
             self.lambda_ssim = float(lambda_ssim)
 
     def get_weights(self):
-        """Execute `get_weights`.
-
-        Args:
-            None.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Trả về dict trọng số hiện tại: {'lambda_l1', 'lambda_sam', 'lambda_ssim'}."""
         return {
             'lambda_l1': float(self.lambda_l1),
             'lambda_sam': float(self.lambda_sam),
@@ -247,52 +185,32 @@ class CombinedLoss(nn.Module):
         }
     
     def forward(self, pred, target):
-        """Run the forward computation for this module.
+        """Tính combined loss — Input [B,C,H,W], Output (total_tensor, dict với l1/sam/ssim/total)."""
+        l1, _ = self.l1_loss(pred, target)
+        sam, _ = self.sam_loss(pred, target)
+        ssim, _ = self.ssim_loss(pred, target)
 
-        Args:
-            pred: Input parameter `pred`.
-            target: Input parameter `target`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
-        # Calculate individual losses
-        l1 = self.l1_loss(pred, target)
-        sam = self.sam_loss(pred, target)
-        ssim = self.ssim_loss(pred, target)
-        
-        # Combined loss
-        total_loss = (self.lambda_l1 * l1 + 
-                     self.lambda_sam * sam + 
-                     self.lambda_ssim * ssim)
-        
-        # Return both total loss and components (for logging)
+        total_loss = self.lambda_l1 * l1 + self.lambda_sam * sam + self.lambda_ssim * ssim
         loss_dict = {
             'total': total_loss.item(),
             'l1': l1.item(),
             'sam': sam.item(),
-            'ssim': ssim.item()
+            'ssim': ssim.item(),
         }
-        
         return total_loss, loss_dict
 
 
 class AdaptiveCombinedLoss(nn.Module):
+    """CombinedLoss với trọng số học được — tự động cân bằng L1/SAM/SSIM.
+
+    Dùng phương pháp uncertainty weighting (Kendall et al.): mỗi loss component
+    được chia cho variance (exp(log_var)) và cộng thêm log_var như regularizer.
+    log_var_* là nn.Parameter — được train cùng model weights.
+
+    loss_dict trả thêm 'weight_l1', 'weight_sam', 'weight_ssim' để theo dõi.
     """
-    Adaptive Combined Loss với learnable weights
-    Tự động học optimal weights cho từng loss component
-    
-    Đây là một cải tiến nâng cao có thể đề cập trong khóa luận!
-    """
+
     def __init__(self):
-        """Initialize the `AdaptiveCombinedLoss` instance.
-
-        Args:
-            None.
-
-        Returns:
-            None: This method initializes state and returns no value.
-        """
         super(AdaptiveCombinedLoss, self).__init__()
         
         # Learnable log variance parameters
@@ -305,20 +223,11 @@ class AdaptiveCombinedLoss(nn.Module):
         self.ssim_loss = SSIMLoss()
     
     def forward(self, pred, target):
-        """Run the forward computation for this module.
+        """Tính adaptive loss — Output (total, dict với l1/sam/ssim/total/weight_*)."""
+        l1, _ = self.l1_loss(pred, target)
+        sam, _ = self.sam_loss(pred, target)
+        ssim, _ = self.ssim_loss(pred, target)
 
-        Args:
-            pred: Input parameter `pred`.
-            target: Input parameter `target`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
-        # Calculate individual losses
-        l1 = self.l1_loss(pred, target)
-        sam = self.sam_loss(pred, target)
-        ssim = self.ssim_loss(pred, target)
-        
         # Adaptive weighting
         precision_l1 = torch.exp(-self.log_var_l1)
         precision_sam = torch.exp(-self.log_var_sam)
@@ -356,30 +265,30 @@ if __name__ == '__main__':
     print("\n1. L1 Loss")
     print("-" * 70)
     l1_loss = L1Loss()
-    loss = l1_loss(pred, target)
-    print(f"L1 Loss: {loss.item():.4f}")
-    
+    loss, d = l1_loss(pred, target)
+    print(f"L1 Loss: {d['l1']:.4f}")
+
     # Test L2 Loss
     print("\n2. L2 Loss")
     print("-" * 70)
     l2_loss = L2Loss()
-    loss = l2_loss(pred, target)
-    print(f"L2 Loss: {loss.item():.4f}")
-    
+    loss, d = l2_loss(pred, target)
+    print(f"L2 Loss: {d['l2']:.4f}")
+
     # Test SAM Loss
     print("\n3. SAM Loss")
     print("-" * 70)
     sam_loss = SAMLoss()
-    loss = sam_loss(pred, target)
-    print(f"SAM Loss: {loss.item():.4f} radians")
-    print(f"SAM Loss: {loss.item() * 180 / math.pi:.4f} degrees")
-    
+    loss, d = sam_loss(pred, target)
+    print(f"SAM Loss: {d['sam']:.4f} radians")
+    print(f"SAM Loss: {d['sam'] * 180 / math.pi:.4f} degrees")
+
     # Test SSIM Loss
     print("\n4. SSIM Loss")
     print("-" * 70)
     ssim_loss = SSIMLoss()
-    loss = ssim_loss(pred, target)
-    print(f"SSIM Loss: {loss.item():.4f}")
+    loss, d = ssim_loss(pred, target)
+    print(f"SSIM Loss: {d['ssim']:.4f}")
     
     # Test Combined Loss
     print("\n5. Combined Loss")

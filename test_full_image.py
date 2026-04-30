@@ -52,8 +52,13 @@ def _save_rgb_png(cube_chw, output_path):
         ],
         axis=2,
     )
-    rgb = np.clip(rgb, 0.0, 1.0)
-    plt.imsave(output_path, rgb)
+    # Stretch to [0, 1] for display — data may be in a small range (e.g. global_fixed /65535)
+    lo, hi = rgb.min(), rgb.max()
+    if hi > lo:
+        rgb = (rgb - lo) / (hi - lo)
+    else:
+        rgb = np.zeros_like(rgb)
+    plt.imsave(output_path, np.clip(rgb, 0.0, 1.0))
 
 
 def _save_band_pngs(cube_chw, band_dir, file_prefix):
@@ -63,13 +68,16 @@ def _save_band_pngs(cube_chw, band_dir, file_prefix):
     os.makedirs(band_dir, exist_ok=True)
     num_bands = int(cube_chw.shape[0])
     pad = max(2, len(str(num_bands)))
+    # Use global min/max across all bands for consistent brightness across PNGs
+    global_lo = float(cube_chw.min())
+    global_hi = float(cube_chw.max())
     for band_idx in range(num_bands):
-        band = np.clip(cube_chw[band_idx, :, :], 0.0, 1.0)
+        band = cube_chw[band_idx, :, :]
         band_path = os.path.join(
             band_dir,
             f"{file_prefix}_band_{band_idx + 1:0{pad}d}.png",
         )
-        plt.imsave(band_path, band, cmap="gray", vmin=0.0, vmax=1.0)
+        plt.imsave(band_path, band, cmap="gray", vmin=global_lo, vmax=global_hi)
 
 
 def _build_safe_sample_names(sample_id, index):
@@ -85,14 +93,7 @@ def _build_safe_sample_names(sample_id, index):
 
 
 def remove_dir_if_effectively_empty(path):
-    """Execute `remove_dir_if_effectively_empty`.
-
-    Args:
-        path: Input parameter `path`.
-
-    Returns:
-        None: This function returns no value.
-    """
+    """Xóa thư mục path nếu rỗng (bỏ qua .DS_Store); no-op nếu không tồn tại."""
     if not path:
         return
     if not os.path.isdir(path):
@@ -116,21 +117,22 @@ def test_full_image(
     chop_overlap=8,
     save_band_png=False
 ):
-    """Execute `test_full_image`.
+    """Đánh giá paper-style trên toàn bộ ảnh test (không patch, không augmentation).
 
     Args:
-        model: Input parameter `model`.
-        dataloader: Input parameter `dataloader`.
-        scale: Input parameter `scale`.
-        device: Input parameter `device`.
-        crop_border: Input parameter `crop_border`.
-        save_dir: Input parameter `save_dir`.
-        chop_patch_size: Input parameter `chop_patch_size`.
-        chop_overlap: Input parameter `chop_overlap`.
-        save_band_png: Input parameter `save_band_png`.
+        model: SR model đã load weights.
+        dataloader: DataLoader trả về (lr, hr, filepath) tuples, batch_size=1.
+        scale: Upscale factor (ví dụ: 4).
+        device: torch.device để chạy inference.
+        crop_border: Nếu True, crop scale pixels trên mỗi cạnh trước khi tính metrics.
+        save_dir: Thư mục lưu SR/HR/LR images; None để không lưu.
+        chop_patch_size: Patch size LR cho sliding-window inference (mặc định 32).
+        chop_overlap: Overlap giữa các patches (mặc định 8).
+        save_band_png: Nếu True, lưu thêm từng band dạng grayscale PNG.
 
     Returns:
-        Any: Output produced by this function.
+        tuple: (avg_metrics, results_per_image) — dict metrics trung bình và list
+               dict metrics từng ảnh.
     """
     model.eval()
 
@@ -203,7 +205,6 @@ def test_full_image(
         sr_tensor = sr.squeeze(0).cpu()
         hr_tensor = hr.squeeze(0).cpu()
 
-        # Calculate metrics (using torch tensors)
         psnr = calculate_psnr(sr_tensor, hr_tensor, data_range=1.0)
         ssim = calculate_ssim(sr_tensor, hr_tensor, data_range=1.0)
         sam = calculate_sam(sr_tensor, hr_tensor)
@@ -288,14 +289,7 @@ def test_full_image(
 
 
 def main():
-    """Execute the main entry-point workflow.
-
-    Args:
-        None.
-
-    Returns:
-        None: This function returns no value.
-    """
+    """Parse CLI args, load checkpoint, build test dataset và chạy full-image evaluation."""
     script_start = time.time()
 
     parser = argparse.ArgumentParser(description='Test Hyperspectral SR Model (Full Image)')
@@ -366,7 +360,14 @@ def main():
         action='store_true',
         help='Force regenerate split.json before loading test split'
     )
-    
+    parser.add_argument(
+        '--normalization_mode',
+        type=str,
+        default=None,
+        choices=['per_image_minmax', 'global_fixed'],
+        help='Override normalization mode from checkpoint config'
+    )
+
     args = parser.parse_args()
     if args.chop_patch_size <= 0:
         raise ValueError(f"--chop_patch_size must be > 0, got {args.chop_patch_size}")
@@ -412,7 +413,7 @@ def main():
     upscale = config.get('upscale_factor', 4)
     effective_split_seed = int(args.split_seed) if args.split_seed is not None else int(config.get('split_seed', 42))
     effective_regenerate_split = bool(config.get('regenerate_split', False)) or bool(args.regenerate_split)
-    effective_normalization_mode = str(config.get('normalization_mode', 'per_image_minmax'))
+    effective_normalization_mode = args.normalization_mode if args.normalization_mode is not None else str(config.get('normalization_mode', 'global_fixed'))
     effective_normalization_scale = float(config.get('normalization_scale', 65535.0))
     config['split_seed'] = effective_split_seed
     config['regenerate_split'] = effective_regenerate_split
@@ -445,8 +446,9 @@ def main():
     regenerate_note = " (CLI override)" if args.regenerate_split else ""
     print(f"Split seed: {effective_split_seed}{split_seed_note}")
     print(f"Regenerate split: {effective_regenerate_split}{regenerate_note}")
+    norm_note = " (CLI override)" if args.normalization_mode is not None else ""
     print(
-        f"Normalization: {effective_normalization_mode} "
+        f"Normalization: {effective_normalization_mode}{norm_note} "
         f"(scale={effective_normalization_scale})"
     )
     print("="*70)
@@ -539,7 +541,7 @@ def main():
                 save_dir=save_dir,
                 chop_patch_size=args.chop_patch_size,
                 chop_overlap=args.chop_overlap,
-                save_band_png=args.save_band_png
+                save_band_png=args.save_band_png,
             )
         except RuntimeError as runtime_err:
             if device.type != "mps":
@@ -559,7 +561,7 @@ def main():
                 save_dir=save_dir,
                 chop_patch_size=args.chop_patch_size,
                 chop_overlap=args.chop_overlap,
-                save_band_png=args.save_band_png
+                save_band_png=args.save_band_png,
             )
 
         total_runtime_sec = time.time() - script_start
@@ -595,8 +597,12 @@ def main():
 
         os.makedirs(output_dir, exist_ok=True)
         json_path = os.path.join(output_dir, 'test_results.json')
-        with open(json_path, 'w') as f:
+        if os.path.exists(json_path):
+            print(f"⚠️  Overwriting existing results: {json_path}")
+        tmp_path = json_path + '.tmp'
+        with open(tmp_path, 'w', encoding='utf-8') as f:
             json.dump(results, f, indent=2)
+        os.replace(tmp_path, json_path)
 
         print(f"\n✅ Results saved to: {json_path}")
         if args.save_images:

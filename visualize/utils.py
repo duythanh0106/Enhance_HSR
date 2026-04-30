@@ -54,11 +54,15 @@ def get_scene_names(dataset: str, scale: int) -> list[str]:
 
 def load_gt(dataset: str, scene_name: str,
             target_hw: tuple = None) -> np.ndarray:
-    """
-    Load GT từ N band PNG trong dataset folder.
-    - Tự động xử lý ảnh 16-bit (uint16, max ~65535)
-    - Nếu target_hw=(H,W) được truyền vào, center-crop GT về đúng kích thước SR
-    Shape trả về: (C, H, W), float32, [0, 1]
+    """Load GT từ N band PNG trong dataset folder, hỗ trợ 16-bit; tùy chọn center-crop.
+
+    Args:
+        dataset: Tên dataset ('CAVE', 'Harvard', v.v.) — dùng làm thư mục con.
+        scene_name: Tên cảnh cần load.
+        target_hw: Nếu (H, W) được truyền, center-crop GT về kích thước này.
+
+    Returns:
+        np.ndarray: Float32 array (C, H, W) trong khoảng [0, 1].
     """
     scene_dir = DATASET_ROOT / dataset / scene_name / scene_name
     if not scene_dir.exists():
@@ -93,10 +97,7 @@ def load_gt(dataset: str, scene_name: str,
 
 
 def load_lr_png(dataset: str, scale: int, scene_name: str) -> np.ndarray:
-    """
-    Load LR từ file _LR.png trong test_results.
-    Trả về (C, H, W) float32 [0,1] — upsample bilinear về HR size.
-    """
+    """Load LR RGB preview (_LR.png) từ test_results; trả về (H, W, 3) float32 [0, 1]."""
     proposed_folder, _ = RESULT_FOLDERS[(dataset, scale)]
     lr_path = (RESULTS_ROOT / proposed_folder / "images"
                / scene_name / f"{scene_name}_LR.png")
@@ -109,10 +110,16 @@ def load_lr_png(dataset: str, scale: int, scene_name: str) -> np.ndarray:
 
 def load_sr(dataset: str, scale: int, scene_name: str,
             which: str = "proposed") -> np.ndarray:
-    """
-    Load SR .npy.
-      which = 'proposed' | 'baseline'
-    Shape: (C, H, W), float32, [0, 1]
+    """Load SR tensor từ _SR.npy; trả về (C, H, W) float32 [0, 1].
+
+    Args:
+        dataset: Tên dataset ('CAVE', 'Harvard', v.v.).
+        scale: Upscale factor (2 hoặc 4).
+        scene_name: Tên cảnh.
+        which: 'proposed' hoặc 'baseline' — xác định folder kết quả.
+
+    Returns:
+        np.ndarray: Float32 array (C, H, W) trong khoảng [0, 1].
     """
     proposed_folder, baseline_folder = RESULT_FOLDERS[(dataset, scale)]
     folder = proposed_folder if which == "proposed" else baseline_folder
@@ -147,17 +154,20 @@ def to_rgb(hsi: np.ndarray, bands: tuple) -> np.ndarray:
 
 
 def psnr(pred: np.ndarray, gt: np.ndarray) -> float:
+    """Tính PSNR (dB) giữa pred và gt; trả về 100.0 nếu MSE gần bằng 0."""
     mse = np.mean((pred - gt) ** 2)
     return 100.0 if mse < 1e-10 else 10 * np.log10(1.0 / mse)
 
 
 def mean_sam(pred: np.ndarray, gt: np.ndarray) -> float:
+    """Tính SAM trung bình (độ) trên toàn ảnh giữa pred và gt (C, H, W)."""
     dot  = np.sum(pred * gt, axis=0)
     norm = np.linalg.norm(pred, axis=0) * np.linalg.norm(gt, axis=0) + 1e-8
     return float(np.degrees(np.arccos(np.clip(dot / norm, -1, 1))).mean())
 
 
 def pixel_sam(pred: np.ndarray, gt: np.ndarray, r: int, c: int) -> float:
+    """Tính SAM (độ) tại pixel (r, c) giữa pred và gt (C, H, W)."""
     p = pred[:, r, c]
     g = gt[:, r, c]
     cos = np.dot(p, g) / (np.linalg.norm(p) * np.linalg.norm(g) + 1e-8)

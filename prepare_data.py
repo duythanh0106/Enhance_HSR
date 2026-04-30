@@ -18,19 +18,19 @@ Paper split summary:
 
 Usage:
     # Bước 1: inspect để biết mat key
-    python prepare_datasets.py --inspect --dataset cave --src ./raw/CAVE
+    python prepare_data.py --inspect --dataset cave --src ./raw/CAVE
 
     # Bước 2: prepare
-    python prepare_datasets.py --dataset cave     --src ./raw/CAVE     --dst ./dataset/CAVE_paper
-    python prepare_datasets.py --dataset chikusei --src ./raw/Chikusei --dst ./dataset/Chikusei_paper
-    python prepare_datasets.py --dataset pavia    --src ./raw/Pavia    --dst ./dataset/Pavia_paper
-    python prepare_datasets.py --dataset harvard  --src ./raw/Harvard  --dst ./dataset/Harvard_paper
+    python prepare_data.py --dataset cave     --src ./raw/CAVE     --dst ./dataset/CAVE_paper
+    python prepare_data.py --dataset chikusei --src ./raw/Chikusei --dst ./dataset/Chikusei_paper
+    python prepare_data.py --dataset pavia    --src ./raw/Pavia    --dst ./dataset/Pavia_paper
+    python prepare_data.py --dataset harvard  --src ./raw/Harvard  --dst ./dataset/Harvard_paper
 
     # Nếu CAVE đã có .npy nhưng split sai (chỉ có 3 test thay vì 8):
-    python prepare_datasets.py --update_split --dataset cave --dst ./dataset/CAVE_paper --scale 4
+    python prepare_data.py --update_split --dataset cave --dst ./dataset/CAVE_paper --scale 4
 
     # Nếu mat key không auto-detect được:
-    python prepare_datasets.py --dataset chikusei --src ./raw --dst ./out --mat_key chikusei
+    python prepare_data.py --dataset chikusei --src ./raw --dst ./out --mat_key chikusei
 """
 
 import argparse

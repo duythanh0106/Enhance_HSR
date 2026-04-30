@@ -108,6 +108,7 @@ def parse_training_log(log_path):
 
 
 def main():
+    """Parse CLI args, đọc training.log và lưu training curves PNG."""
     parser = argparse.ArgumentParser(description="Plot training curves from training.log")
     parser.add_argument("--log", type=str, required=True, help="Path to training.log")
     parser.add_argument("--out", type=str, default=None, help="Output PNG path (optional)")

@@ -1,6 +1,17 @@
 """
-ESSA Original Model (Baseline)
-Code gốc từ file bạn cung cấp
+ESSA Original (Baseline) — model baseline không có SSAM hay SpecTrans.
+
+Đây là model gốc ESSA (Efficient Spectral Super-resolution Architecture) dùng
+ESSAttn — cơ chế attention riêng dựa trên power normalization thay vì softmax.
+
+Kiến trúc: conv_first → blockup (5 bước progressive) → conv_last
+Khác với ESSA-SSAM: dùng ESSAttn thay vì SpatialSpectralAttention.
+
+QUAN TRỌNG:
+  - Dùng làm baseline để so sánh với ESSA-SSAM và ESSA-SSAM-SpecTrans
+  - inch phải chỉ định qua dataset= hoặc inch=
+  - Supported upscale: 2^n hoặc 3 (PixelShuffle/PixelUnshuffle)
+  - Factory build thông qua models/factory.py với key 'ESSA' hoặc 'ESSA_Original'
 """
 
 import math
@@ -12,15 +23,13 @@ np.random.seed(0)
 
 
 class Convdown(nn.Module):
+    """Conv block với ESSAttn — dùng ở nhánh feature extraction (LR space).
+
+    Pipeline: PatchEmbed → ESSAttn → PatchUnEmbed → concat(x, shortcut) → convd → + shortcut
+    """
+
     def __init__(self, dim):
-        """Initialize the `Convdown` instance.
-
-        Args:
-            dim: Input parameter `dim`.
-
-        Returns:
-            None: This method initializes state and returns no value.
-        """
+        """Khởi tạo với dim feature channels."""
         super().__init__()
         self.patch_embed = PatchEmbed()
         self.patch_unembed = PatchUnEmbed(embed_dim=dim)
@@ -36,14 +45,7 @@ class Convdown(nn.Module):
         self.drop = nn.Dropout2d(0.2)
 
     def forward(self, x):
-        """Run the forward computation for this module.
-
-        Args:
-            x: Input parameter `x`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Input [B,dim,H,W] → Output [B,dim,H,W] — LR-space feature refinement."""
         shortcut = x
         x_size = (x.shape[2], x.shape[3])
         x_embed = self.patch_embed(x)
@@ -56,15 +58,13 @@ class Convdown(nn.Module):
 
 
 class Convup(nn.Module):
+    """Conv block với ESSAttn — dùng ở nhánh HR space (sau upsample).
+
+    Cấu trúc giống Convdown nhưng dùng convu thay convd.
+    """
+
     def __init__(self, dim):
-        """Initialize the `Convup` instance.
-
-        Args:
-            dim: Input parameter `dim`.
-
-        Returns:
-            None: This method initializes state and returns no value.
-        """
+        """Khởi tạo với dim feature channels."""
         super().__init__()
         self.patch_embed = PatchEmbed()
         self.patch_unembed = PatchUnEmbed(embed_dim=dim)
@@ -79,14 +79,7 @@ class Convup(nn.Module):
         self.attn = ESSAttn(dim)
 
     def forward(self, x):
-        """Run the forward computation for this module.
-
-        Args:
-            x: Input parameter `x`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Input [B,dim,H,W] → Output [B,dim,H,W] — HR-space feature refinement."""
         shortcut = x
         x_size = (x.shape[2], x.shape[3])
         x_embed = self.patch_embed(x)
@@ -99,15 +92,14 @@ class Convup(nn.Module):
 
 
 class blockup(nn.Module):
+    """5-bước progressive refinement: LR→HR→LR→HR→LR→HR với accumulated skip connections."""
+
     def __init__(self, dim, upscale):
-        """Initialize the `blockup` instance.
+        """Khởi tạo 5-step progressive refinement block.
 
         Args:
-            dim: Input parameter `dim`.
-            upscale: Input parameter `upscale`.
-
-        Returns:
-            None: This method initializes state and returns no value.
+            dim: Số feature channels.
+            upscale: SR scale factor (2^n hoặc 3).
         """
         super(blockup, self).__init__()
         self.convup = Convup(dim)
@@ -116,14 +108,7 @@ class blockup(nn.Module):
         self.convdownsample = Downsample(scale=upscale, num_feat=dim)
 
     def forward(self, x):
-        """Run the forward computation for this module.
-
-        Args:
-            x: Input parameter `x`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """5 bước progressive: Input [B,dim,H,W] → Output [B,dim,H*upscale,W*upscale]."""
         xup = self.convupsample(x)
         x1 = self.convup(xup)
         xdown = self.convdownsample(x1) + x
@@ -138,83 +123,49 @@ class blockup(nn.Module):
 
 
 class PatchEmbed(nn.Module):
+    """Flatten spatial dims và transpose: [B,C,H,W] → [B,H*W,C]."""
+
     def __init__(self):
-        """Initialize the `PatchEmbed` instance.
-
-        Args:
-            None.
-
-        Returns:
-            None: This method initializes state and returns no value.
-        """
         super().__init__()
 
     def forward(self, x):
-        """Run the forward computation for this module.
-
-        Args:
-            x: Input parameter `x`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """[B,C,H,W] → [B,H*W,C] — chuẩn bị cho attention/norm trên channel dim."""
         x = x.flatten(2).transpose(1, 2)
         return x
 
 
 class PatchUnEmbed(nn.Module):
+    """Đảo ngược PatchEmbed: [B,H*W,C] → [B,embed_dim,H,W]."""
+
     def __init__(self, in_chans=3, embed_dim=96):
-        """Initialize the `PatchUnEmbed` instance.
-
-        Args:
-            in_chans: Input parameter `in_chans`.
-            embed_dim: Input parameter `embed_dim`.
-
-        Returns:
-            None: This method initializes state and returns no value.
-        """
+        """Khởi tạo với embed_dim channels — dùng khi reshape về image space."""
         super().__init__()
         self.in_chans = in_chans
         self.embed_dim = embed_dim
 
     def forward(self, x, x_size):
-        """Run the forward computation for this module.
-
-        Args:
-            x: Input parameter `x`.
-            x_size: Input parameter `x_size`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """[B,H*W,C] → [B,embed_dim,H,W] — x_size là tuple (H, W)."""
         B, HW, C = x.shape
         x = x.transpose(1, 2).view(B, self.embed_dim, x_size[0], x_size[1])
         return x
 
 
 class ESSAttn(nn.Module):
+    """Efficient Spectral-Spatial Attention dùng power normalization thay softmax.
+
+    Q và K được zero-centered rồi chuẩn hóa bằng L2-power, attention map
+    tính bằng q²·(k²ᵀ·v)/√N — hiệu quả hơn scaled dot-product trên HSI.
+    Input/Output: [B, N, C] (sequence of spatial tokens).
+    """
+
     def __init__(self, dim):
-        """Initialize the `ESSAttn` instance.
-
-        Args:
-            dim: Input parameter `dim`.
-
-        Returns:
-            None: This method initializes state and returns no value.
-        """
+        """Khởi tạo với feature channel width dim."""
         super().__init__()
         self.lnqkv = nn.Linear(dim, dim * 3)
         self.ln = nn.Linear(dim, dim)
 
     def forward(self, x):
-        """Run the forward computation for this module.
-
-        Args:
-            x: Input parameter `x`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Input [B,N,C] → Output [B,N,C] — spectral-spatial attention với power norm."""
         b, N, C = x.shape
         qkv = self.lnqkv(x)
         qkv = torch.split(qkv, C, 2)
@@ -237,15 +188,17 @@ class ESSAttn(nn.Module):
 
 
 class Downsample(nn.Sequential):
+    """PixelUnshuffle downsampling: [B,num_feat,H,W] → [B,num_feat,H/scale,W/scale].
+
+    Chỉ hỗ trợ scale là 2^n hoặc 3.
+    """
+
     def __init__(self, scale, num_feat):
-        """Initialize the `Downsample` instance.
+        """Xây dựng chuỗi PixelUnshuffle layers.
 
         Args:
-            scale: Input parameter `scale`.
-            num_feat: Input parameter `num_feat`.
-
-        Returns:
-            None: This method initializes state and returns no value.
+            scale: Downscale factor — phải là 2^n hoặc 3.
+            num_feat: Số feature channels đầu vào.
         """
         m = []
         if (scale & (scale - 1)) == 0:  # scale = 2^n
@@ -261,15 +214,17 @@ class Downsample(nn.Sequential):
 
 
 class Upsample(nn.Sequential):
+    """PixelShuffle upsampling: [B,num_feat,H,W] → [B,num_feat,H*scale,W*scale].
+
+    Chỉ hỗ trợ scale là 2^n hoặc 3.
+    """
+
     def __init__(self, scale, num_feat):
-        """Initialize the `Upsample` instance.
+        """Xây dựng chuỗi PixelShuffle layers.
 
         Args:
-            scale: Input parameter `scale`.
-            num_feat: Input parameter `num_feat`.
-
-        Returns:
-            None: This method initializes state and returns no value.
+            scale: Upscale factor — phải là 2^n hoặc 3.
+            num_feat: Số feature channels đầu vào.
         """
         m = []
         if (scale & (scale - 1)) == 0:  # scale = 2^n
@@ -285,22 +240,19 @@ class Upsample(nn.Sequential):
 
 
 class ESSA(nn.Module):
-    """
-    ESSA Original Model (Baseline)
-    Auto-compatible with HyperspectralDataset
+    """ESSA baseline — model gốc không có SSAM hay SpecTrans.
+
+    Kiến trúc: conv_first (inch→dim) → blockup (ESSAttn) → conv_last (dim→inch)
     """
 
     def __init__(self, dataset=None, inch=None, dim=128, upscale=4):
-        """Initialize the `ESSA` instance.
+        """Khởi tạo ESSA baseline.
 
         Args:
-            dataset: Input parameter `dataset`.
-            inch: Input parameter `inch`.
-            dim: Input parameter `dim`.
-            upscale: Input parameter `upscale`.
-
-        Returns:
-            None: This method initializes state and returns no value.
+            dataset: HyperspectralDataset — tự đọc num_bands. Hoặc truyền inch trực tiếp.
+            inch: Số spectral bands (bắt buộc nếu dataset=None).
+            dim: Feature channel width (mặc định 128).
+            upscale: SR scale factor (mặc định 4).
         """
         super(ESSA, self).__init__()
 
@@ -320,14 +272,7 @@ class ESSA(nn.Module):
         self.conv_last = nn.Conv2d(dim, inch, 3, 1, 1)
 
     def forward(self, x):
-        """Run the forward computation for this module.
-
-        Args:
-            x: Input parameter `x`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """SR inference — Input [B,inch,H,W] → Output [B,inch,H*upscale,W*upscale]."""
         x = self.conv_first(x)
         x = self.blockup(x)
         x = self.conv_last(x)
@@ -335,26 +280,11 @@ class ESSA(nn.Module):
 
     @classmethod
     def from_dataset(cls, dataset, **kwargs):
-        """Execute `from_dataset`.
-
-        Args:
-            dataset: Input parameter `dataset`.
-            **kwargs: Input parameter `**kwargs`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Tạo model từ dataset object — tự đọc num_bands."""
         return cls(dataset=dataset, **kwargs)
 
     def get_model_info(self):
-        """Execute `get_model_info`.
-
-        Args:
-            None.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Trả về dict thông tin model: name, channels, dim, upscale, params."""
         num_params = sum(p.numel() for p in self.parameters())
         return {
             "model_name": "ESSA (Baseline)",

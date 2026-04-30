@@ -1,28 +1,32 @@
-"""Selection-score utilities for checkpoint/model ranking."""
+"""
+Selection-score utilities — tính composite score để chọn best checkpoint.
+
+So sánh và xếp hạng model dựa trên nhiều metrics (PSNR, SSIM, SAM, ERGAS).
+Dùng bởi train.py và seed_sweep.py để quyết định checkpoint nào là "best".
+
+QUAN TRỌNG:
+  - SAM và ERGAS là lower-is-better → được đảo nghịch trước khi tổng hợp
+  - Score cuối thuộc [0, 1]; score cao hơn = model tốt hơn
+  - Default weights: PSNR=0.45, SSIM=0.25, SAM=0.20, ERGAS=0.10
+  - refs là giá trị tham chiếu để chuẩn hóa (PSNR ref=50, SAM ref=10°, ERGAS ref=20)
+"""
 
 
 def clamp01(value):
-    """Execute `clamp01`.
-
-    Args:
-        value: Input parameter `value`.
-
-    Returns:
-        Any: Output produced by this function.
-    """
+    """Kẹp giá trị float về [0, 1] — dùng nội bộ khi chuẩn hóa metrics."""
     return max(0.0, min(1.0, float(value)))
 
 
 def _cfg_get(config_like, key, default):
-    """Internal helper for `cfg_get` operations.
+    """Đọc key từ dict hoặc object config — unified accessor nội bộ.
 
     Args:
-        config_like: Input parameter `config_like`.
-        key: Input parameter `key`.
-        default: Input parameter `default`.
+        config_like: Dict hoặc object có attribute.
+        key: Tên field cần đọc.
+        default: Fallback nếu key không tồn tại.
 
     Returns:
-        Any: Output produced by this function.
+        Giá trị config[key] hoặc getattr(config_like, key, default).
     """
     if isinstance(config_like, dict):
         return config_like.get(key, default)
@@ -30,16 +34,16 @@ def _cfg_get(config_like, key, default):
 
 
 def compute_selection_score(metrics, selection_metric="psnr", weights=None, refs=None):
-    """Execute `compute_selection_score`.
+    """Tính composite score từ dict metrics để chọn checkpoint tốt nhất.
 
     Args:
-        metrics: Input parameter `metrics`.
-        selection_metric: Input parameter `selection_metric`.
-        weights: Input parameter `weights`.
-        refs: Input parameter `refs`.
+        metrics: Dict với keys 'PSNR', 'SSIM', 'SAM', 'ERGAS' (float).
+        selection_metric: 'psnr' (dùng PSNR trực tiếp) hoặc 'composite'.
+        weights: Dict trọng số mỗi metric — mặc định xem module docstring.
+        refs: Dict giá trị tham chiếu để normalize metrics.
 
     Returns:
-        Any: Output produced by this function.
+        float: Score trong [0, 1] — score cao hơn = model tốt hơn.
     """
     mode = str(selection_metric or "psnr").lower()
     if mode == "psnr":
@@ -70,14 +74,14 @@ def compute_selection_score(metrics, selection_metric="psnr", weights=None, refs
 
 
 def compute_selection_score_from_config(metrics, config_like):
-    """Execute `compute_selection_score_from_config`.
+    """Đọc weights/refs từ config rồi gọi compute_selection_score.
 
     Args:
-        metrics: Input parameter `metrics`.
-        config_like: Input parameter `config_like`.
+        metrics: Dict PSNR/SSIM/SAM/ERGAS.
+        config_like: Config object hoặc dict có best_selection_metric/weights/refs.
 
     Returns:
-        Any: Output produced by this function.
+        float: Score (higher is better).
     """
     selection_metric = _cfg_get(config_like, "best_selection_metric", "psnr")
     weights = _cfg_get(config_like, "best_score_weights", {}) or {}

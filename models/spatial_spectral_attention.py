@@ -1,6 +1,20 @@
 """
-Spatial-Spectral Attention Module (SSAM)
-Đề xuất cho khóa luận: Cải tiến ESSA với attention riêng biệt cho spatial và spectral
+Spatial-Spectral Attention Module (SSAM) — module attention đề xuất chính.
+
+Kết hợp hai nhánh attention bổ trợ nhau:
+  - SpectralAttention : học correlation giữa bands (global avg+max pool → MLP → sigmoid)
+  - SpatialAttention  : học vị trí quan trọng (channel pool → conv → sigmoid)
+
+Ba chế độ fusion trong SpatialSpectralAttention:
+  'sequential' — spectral trước, spatial sau (mặc định, hiệu quả nhất thực nghiệm)
+  'parallel'   — áp dụng song song rồi cộng output
+  'adaptive'   — weighted sum với learnable alpha/beta
+
+QUAN TRỌNG:
+  - Input/Output của tất cả modules: [B, C, H, W] — shape được bảo toàn
+  - SSAMBlock (conv + SSAM + conv) là building block cho ESSA-SSAM và ESSA-SSAM-SpecTrans
+  - use_residual=False trong SSAMBlock vì caller tự quản lý skip connection
+  - Dùng bởi essa_improved.py và essa_ssam_spectrans.py
 """
 
 import torch
@@ -9,21 +23,18 @@ import torch.nn.functional as F
 
 
 class SpectralAttention(nn.Module):
+    """Học tầm quan trọng của từng spectral band qua global pooling + MLP.
+
+    Avg-pool và max-pool trên spatial dims → MLP → sigmoid → channel-wise scale.
+    Input/Output: [B, C, H, W] — shape bảo toàn, chỉ scale các channels.
     """
-    Spectral Attention: Học correlation giữa các spectral bands
-    Input: [B, C, H, W] với C = số bands (31 cho CAVE/Harvard)
-    Output: [B, C, 1, 1] - attention weights cho mỗi band
-    """
-    
+
     def __init__(self, num_channels, reduction=4):
-        """Initialize the `SpectralAttention` instance.
+        """Khởi tạo spectral attention với global pooling + MLP.
 
         Args:
-            num_channels: Input parameter `num_channels`.
-            reduction: Input parameter `reduction`.
-
-        Returns:
-            None: This method initializes state and returns no value.
+            num_channels: Số spectral bands C.
+            reduction: Tỉ lệ nén hidden dim của MLP — hidden = C // reduction.
         """
         super(SpectralAttention, self).__init__()
         
@@ -41,14 +52,7 @@ class SpectralAttention(nn.Module):
         self.sigmoid = nn.Sigmoid()
     
     def forward(self, x):
-        """Run the forward computation for this module.
-
-        Args:
-            x: Input parameter `x`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Input [B,C,H,W] → Output [B,C,H,W] — x nhân với spectral attention weights."""
         # Global pooling theo spatial dimensions
         avg_out = self.mlp(self.avg_pool(x))  # [B, C, 1, 1]
         max_out = self.mlp(self.max_pool(x))  # [B, C, 1, 1]
@@ -63,20 +67,17 @@ class SpectralAttention(nn.Module):
 
 
 class SpatialAttention(nn.Module):
+    """Học vị trí spatial quan trọng qua channel pooling + conv.
+
+    Avg-pool và max-pool trên channel dim → concat → conv → sigmoid → spatial scale.
+    Input/Output: [B, C, H, W] — shape bảo toàn.
     """
-    Spatial Attention: Học vị trí spatial quan trọng
-    Input: [B, C, H, W]
-    Output: [B, 1, H, W] - attention map cho spatial locations
-    """
-    
+
     def __init__(self, kernel_size=7):
-        """Initialize the `SpatialAttention` instance.
+        """Khởi tạo spatial attention với channel pooling + conv.
 
         Args:
-            kernel_size: Input parameter `kernel_size`.
-
-        Returns:
-            None: This method initializes state and returns no value.
+            kernel_size: Kích thước conv kernel — 3 hoặc 7; dùng 7 cho receptive field rộng hơn.
         """
         super(SpatialAttention, self).__init__()
         
@@ -88,14 +89,7 @@ class SpatialAttention(nn.Module):
         self.sigmoid = nn.Sigmoid()
     
     def forward(self, x):
-        """Run the forward computation for this module.
-
-        Args:
-            x: Input parameter `x`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Input [B,C,H,W] → Output [B,C,H,W] — x nhân với spatial attention map."""
         # Channel-wise pooling
         avg_out = torch.mean(x, dim=1, keepdim=True)  # [B, 1, H, W]
         max_out, _ = torch.max(x, dim=1, keepdim=True)  # [B, 1, H, W]
@@ -113,29 +107,21 @@ class SpatialAttention(nn.Module):
 
 
 class SpatialSpectralAttention(nn.Module):
+    """Module attention đề xuất chính — kết hợp SpectralAttention + SpatialAttention.
+
+    Hỗ trợ 3 fusion modes (xem module docstring).
+    use_residual=True thêm skip connection x + out; False để caller quản lý residual.
     """
-    Spatial-Spectral Attention Module (SSAM)
-    Kết hợp cả Spectral Attention và Spatial Attention
-    
-    ĐÂY LÀ MODULE ĐỀ XUẤT CHÍNH CỦA KHÓA LUẬN!
-    """
-    
+
     def __init__(self, num_channels, reduction=4, kernel_size=7, fusion_mode='sequential', use_residual=True):
-        """Initialize the `SpatialSpectralAttention` instance.
+        """Khởi tạo SSAM — kết hợp SpectralAttention và SpatialAttention.
 
         Args:
-            num_channels: Number of input/output channels.
-            reduction: Channel reduction ratio for SpectralAttention MLP.
-            kernel_size: Kernel size for SpatialAttention convolution.
-            fusion_mode: How spectral and spatial branches are combined.
-                'sequential' — spectral then spatial (default).
-                'parallel'   — both applied to input, outputs summed.
-                'adaptive'   — learned alpha/beta weighting.
-            use_residual: Add a skip connection over the full attention block.
-                Set False when the caller (e.g. SSAMBlock) owns the residual.
-
-        Returns:
-            None: This method initializes state and returns no value.
+            num_channels: Số channels C (spectral bands hoặc features).
+            reduction: Tỉ lệ nén hidden dim của spectral MLP (C // reduction).
+            kernel_size: Kernel size cho spatial conv — 3 hoặc 7.
+            fusion_mode: Chiến lược kết hợp — 'sequential', 'parallel', hoặc 'adaptive'.
+            use_residual: True để cộng skip connection x vào output (standalone use).
         """
         super(SpatialSpectralAttention, self).__init__()
 
@@ -154,14 +140,7 @@ class SpatialSpectralAttention(nn.Module):
             self.beta = nn.Parameter(torch.ones(1))
     
     def forward(self, x):
-        """Run the forward computation for this module.
-
-        Args:
-            x: Input parameter `x`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Input [B,C,H,W] → Output [B,C,H,W] — kết hợp spectral và spatial attention."""
         if self.fusion_mode == 'sequential':
             # Sequential: Spectral first, then Spatial
             out = self.spectral_attention(x)
@@ -189,22 +168,19 @@ class SpatialSpectralAttention(nn.Module):
 
 
 class SSAMBlock(nn.Module):
+    """Building block: conv3×3 → SSAM (no internal residual) → conv3×3 → + skip.
+
+    Được thiết kế để thay thế ESSAttn trong ESSA gốc; caller tự quản lý residual.
     """
-    SSAM Block: Convolution + SSAM + Convolution
-    Đây là building block để thay thế ESSAttn trong ESSA gốc
-    """
-    
+
     def __init__(self, num_channels, reduction=4, kernel_size=7, fusion_mode='sequential'):
-        """Initialize the `SSAMBlock` instance.
+        """Khởi tạo SSAMBlock — conv + SSAM + conv với skip.
 
         Args:
-            num_channels: Input parameter `num_channels`.
-            reduction: Input parameter `reduction`.
-            kernel_size: Input parameter `kernel_size`.
-            fusion_mode: Input parameter `fusion_mode`.
-
-        Returns:
-            None: This method initializes state and returns no value.
+            num_channels: Số channels C.
+            reduction: Tỉ lệ nén spectral MLP — truyền vào SpatialSpectralAttention.
+            kernel_size: Spatial conv kernel size — truyền vào SpatialSpectralAttention.
+            fusion_mode: SSAM fusion strategy — truyền vào SpatialSpectralAttention.
         """
         super(SSAMBlock, self).__init__()
         
@@ -228,16 +204,9 @@ class SSAMBlock(nn.Module):
         self.norm = nn.LayerNorm(num_channels)
     
     def forward(self, x):
-        """Run the forward computation for this module.
-
-        Args:
-            x: Input parameter `x`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Input [B,C,H,W] → Output [B,C,H,W] — conv + SSAM + conv với skip."""
         identity = x
-        
+
         # Convolution
         out = self.conv1(x)
         out = self.relu1(out)

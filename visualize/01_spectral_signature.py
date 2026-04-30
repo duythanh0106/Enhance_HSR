@@ -33,7 +33,7 @@ STYLE = {
 
 def plot_spectral(dataset, scale, scene, n_pixels=4,
                   manual_pixels=None, output_dir="figures"):
-
+    """Vẽ và lưu spectral profile tại các pixel đại diện — so sánh LR/ESSA/Đề xuất/GT."""
     waves = WAVELENGTHS[dataset]
 
     proposed = load_sr(dataset, scale, scene, which="proposed")
@@ -105,6 +105,7 @@ def plot_spectral(dataset, scale, scene, n_pixels=4,
 
 
 def main():
+    """Parse CLI args và chạy plot_spectral cho dataset/scale/scene đã chọn."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", default="CAVE",
                         choices=["CAVE", "Harvard", "Chikusei", "Pavia"])

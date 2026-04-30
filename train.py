@@ -1,6 +1,18 @@
 """
-Main Training Script for Hyperspectral Super-Resolution
-Run: python train.py --config proposed
+Main training script cho Hyperspectral Super-Resolution.
+
+Cung cấp hai class chính:
+  ModelEMA — Exponential Moving Average tracker cho validation/checkpoint ổn định
+  Trainer  — Quản lý toàn bộ training loop: data, model, optimizer, scheduler, checkpoint
+
+Chạy: python train.py --config cave
+      python train.py --config cave_x2 --data_root ./data/CAVE
+      python train.py --config default --resume ./checkpoints/exp/latest.pth
+
+QUAN TRỌNG:
+  - build_config(preset) load config từ config.py — xem danh sách presets với --help
+  - Checkpoint lưu atomic (tmp + os.replace) để tránh corrupt nếu crash
+  - EMA weights dùng cho validation/best checkpoint, không dùng khi train
 """
 
 import os
@@ -27,14 +39,11 @@ class ModelEMA:
     """EMA tracker cho tham số model, dùng cho validation/checkpoint ổn định hơn."""
 
     def __init__(self, model, decay=0.999):
-        """Initialize the `ModelEMA` instance.
+        """Khởi tạo EMA shadow weights từ model hiện tại.
 
         Args:
-            model: Input parameter `model`.
-            decay: Input parameter `decay`.
-
-        Returns:
-            None: This method initializes state and returns no value.
+            model: Model có parameters cần theo dõi.
+            decay: Hệ số EMA — shadow = decay*shadow + (1-decay)*param (mặc định 0.999).
         """
         self.decay = float(decay)
         self.shadow = {
@@ -45,14 +54,7 @@ class ModelEMA:
         self.backup = None
 
     def update(self, model):
-        """Execute `update`.
-
-        Args:
-            model: Input parameter `model`.
-
-        Returns:
-            None: This function returns no value.
-        """
+        """Cập nhật shadow weights từ model parameters sau mỗi train step."""
         one_minus_decay = 1.0 - self.decay
         for name, param in model.named_parameters():
             if not param.requires_grad:
@@ -60,14 +62,7 @@ class ModelEMA:
             self.shadow[name].mul_(self.decay).add_(param.detach(), alpha=one_minus_decay)
 
     def apply_shadow(self, model):
-        """Execute `apply_shadow`.
-
-        Args:
-            model: Input parameter `model`.
-
-        Returns:
-            None: This function returns no value.
-        """
+        """Thay thế model parameters bằng EMA shadow weights — backup params trước."""
         self.backup = {}
         for name, param in model.named_parameters():
             if not param.requires_grad:
@@ -76,14 +71,7 @@ class ModelEMA:
             param.data.copy_(self.shadow[name])
 
     def restore(self, model):
-        """Execute `restore`.
-
-        Args:
-            model: Input parameter `model`.
-
-        Returns:
-            None: This function returns no value.
-        """
+        """Khôi phục model parameters từ backup (sau khi apply_shadow)."""
         if self.backup is None:
             return
         for name, param in model.named_parameters():
@@ -92,28 +80,14 @@ class ModelEMA:
         self.backup = None
 
     def state_dict(self):
-        """Execute `state_dict`.
-
-        Args:
-            None.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Trả về dict chứa decay và shadow weights để lưu vào checkpoint."""
         return {
             'decay': self.decay,
             'shadow': {k: v.detach().clone() for k, v in self.shadow.items()},
         }
 
     def load_state_dict(self, state):
-        """Execute `load_state_dict`.
-
-        Args:
-            state: Input parameter `state`.
-
-        Returns:
-            None: This function returns no value.
-        """
+        """Khôi phục EMA state từ checkpoint dict (decay và shadow weights)."""
         self.decay = float(state.get('decay', self.decay))
         loaded_shadow = state.get('shadow', {})
         if loaded_shadow:
@@ -124,13 +98,10 @@ class Trainer:
     """Trainer class cho training và validation"""
     
     def __init__(self, config):
-        """Initialize the `Trainer` instance.
+        """Khởi tạo Trainer — build datasets, model, optimizer, scheduler, loss.
 
         Args:
-            config: Input parameter `config`.
-
-        Returns:
-            None: This method initializes state and returns no value.
+            config: Config object với tất cả hyperparameters (xem config.py).
         """
         self.config = config
 
@@ -143,6 +114,9 @@ class Trainer:
         # Open log file early — ALL _log() calls (build, dataloader, model) are recorded.
         # train() calls _open_log_file() again but it is a no-op if already open.
         self._open_log_file()
+
+        # Log config vào file ngay sau khi log mở — dùng self._log để ghi cả stdout lẫn file.
+        self.config.print_config(print_fn=self._log)
 
         # Set random seed
         self.set_seed(config.seed)
@@ -180,14 +154,7 @@ class Trainer:
             self.load_checkpoint(config.resume_checkpoint)
     
     def set_seed(self, seed):
-        """Execute `set_seed`.
-
-        Args:
-            seed: Input parameter `seed`.
-
-        Returns:
-            None: This function returns no value.
-        """
+        """Đặt random seed cho torch, numpy và Python random để reproducibility."""
         torch.manual_seed(seed)
 
         if torch.cuda.is_available():
@@ -197,26 +164,12 @@ class Trainer:
         random.seed(seed)  # seed Python built-in random (dùng bởi nhiều augmentation lib)
 
     def _set_learning_rate(self, lr):
-        """Internal helper for `set_learning_rate` operations.
-
-        Args:
-            lr: Input parameter `lr`.
-
-        Returns:
-            None: This function returns no value.
-        """
+        """Đặt learning rate trực tiếp cho tất cả optimizer param groups."""
         for param_group in self.optimizer.param_groups:
             param_group['lr'] = float(lr)
 
     def _apply_warmup(self, epoch):
-        """Internal helper for `apply_warmup` operations.
-
-        Args:
-            epoch: Input parameter `epoch`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Điều chỉnh LR theo warmup schedule; trả về True nếu epoch đang trong warmup."""
         warmup_epochs = int(getattr(self.config, 'warmup_epochs', 0))
         if warmup_epochs <= 0:
             return False
@@ -236,26 +189,12 @@ class Trainer:
 
     @staticmethod
     def format_duration(seconds):
-        """Execute `format_duration`.
-
-        Args:
-            seconds: Input parameter `seconds`.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Delegate sang utils.format_duration — chuyển giây thành HH:MM:SS."""
         return format_duration(seconds)
 
     @staticmethod
     def _remove_dir_if_effectively_empty(path):
-        """Internal helper for `remove_dir_if_effectively_empty` operations.
-
-        Args:
-            path: Input parameter `path`.
-
-        Returns:
-            None: This function returns no value.
-        """
+        """Xóa thư mục path nếu rỗng (bỏ qua .DS_Store)."""
         if not os.path.isdir(path):
             return
         entries = [e for e in os.listdir(path) if e != '.DS_Store']
@@ -288,26 +227,12 @@ class Trainer:
         self._remove_dir_if_effectively_empty(self.config.checkpoint_dir)
 
     def _ensure_output_dirs(self):
-        """Internal helper for `ensure_output_dirs` operations.
-
-        Args:
-            None.
-
-        Returns:
-            None: This function returns no value.
-        """
+        """Tạo checkpoint_dir và log_dir nếu chưa tồn tại."""
         os.makedirs(self.config.checkpoint_dir, exist_ok=True)
         os.makedirs(self.config.log_dir, exist_ok=True)
 
     def _open_log_file(self):
-        """Internal helper for `open_log_file` operations.
-
-        Args:
-            None.
-
-        Returns:
-            None: This function returns no value.
-        """
+        """Mở training.log trong append mode — no-op nếu đã mở."""
         self._ensure_output_dirs()
         if self.log_file is None:
             log_path = os.path.join(self.config.log_dir, 'training.log')
@@ -315,30 +240,13 @@ class Trainer:
             self.log_file.write("=== Training Log Started ===\n")
 
     def _log(self, message):
-        """Internal helper for `log` operations.
-
-        Args:
-            message: Input parameter `message`.
-
-        Returns:
-            None: This function returns no value.
-        """
+        """Print message và ghi vào training.log."""
         print(message)
         if self.log_file is not None:
             self.log_file.write(message + "\n")
 
     def _log_runtime_device_snapshot(self, lr, hr, sr, loss):
-        """Internal helper for `log_runtime_device_snapshot` operations.
-
-        Args:
-            lr: Input parameter `lr`.
-            hr: Input parameter `hr`.
-            sr: Input parameter `sr`.
-            loss: Input parameter `loss`.
-
-        Returns:
-            None: This function returns no value.
-        """
+        """Log một lần duy nhất thông tin device và MPS memory khi bắt đầu train."""
         if self._device_runtime_logged:
             return
         if not bool(getattr(self.config, 'log_device_runtime', True)):
@@ -371,14 +279,7 @@ class Trainer:
         self._device_runtime_logged = True
     
     def build_model(self):
-        """Execute `build_model`.
-
-        Args:
-            None.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Build model từ config, di chuyển lên device, log params và device."""
         model = build_model_from_config(self.config)
         model = model.to(self.device)
         
@@ -391,14 +292,7 @@ class Trainer:
         return model
     
     def build_dataloaders(self):
-        """Execute `build_dataloaders`.
-
-        Args:
-            None.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Build train và val DataLoaders; tự detect num_bands và sync vào config."""
 
         split_kwargs = build_split_kwargs(
             upscale=self.config.upscale_factor,
@@ -510,14 +404,7 @@ class Trainer:
         return train_loader, val_loader
     
     def build_optimizer(self):
-        """Execute `build_optimizer`.
-
-        Args:
-            None.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Build optimizer theo config; khôi phục state nếu rebuild giữa chừng."""
         previous_optimizer_state = None
         previous_optimizer = getattr(self, 'optimizer', None)
         if previous_optimizer is not None:
@@ -553,14 +440,7 @@ class Trainer:
         return optimizer
     
     def build_scheduler(self):
-        """Execute `build_scheduler`.
-
-        Args:
-            None.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Build LR scheduler theo config; khôi phục state nếu cùng loại khi rebuild."""
         previous_scheduler_state = None
         previous_scheduler_type = None
         previous_scheduler = getattr(self, 'scheduler', None)
@@ -572,27 +452,22 @@ class Trainer:
                 previous_scheduler_state = None
                 previous_scheduler_type = None
 
-        if self.config.lr_scheduler == 'cosine':
-            scheduler = optim.lr_scheduler.CosineAnnealingLR(
-                self.optimizer,
-                T_max=self.config.num_epochs,
-                eta_min=self.config.lr_min
-            )
-        elif self.config.lr_scheduler == 'step':
-            scheduler = optim.lr_scheduler.StepLR(
+        # Registry: add new scheduler types here — no other code needs to change.
+        _SCHEDULER_REGISTRY = {
+            'cosine':  lambda: optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer, T_max=self.config.num_epochs, eta_min=self.config.lr_min,
+            ),
+            'step':    lambda: optim.lr_scheduler.StepLR(
                 self.optimizer,
                 step_size=int(getattr(self.config, 'lr_step_size', 30)),
                 gamma=float(getattr(self.config, 'lr_step_gamma', 0.5)),
-            )
-        elif self.config.lr_scheduler == 'plateau':
-            scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-                self.optimizer,
-                mode='max',
-                factor=0.5,
-                patience=10
-            )
-        else:
-            scheduler = None
+            ),
+            'plateau': lambda: optim.lr_scheduler.ReduceLROnPlateau(
+                self.optimizer, mode='max', factor=0.5, patience=10,
+            ),
+        }
+        factory = _SCHEDULER_REGISTRY.get(self.config.lr_scheduler)
+        scheduler = factory() if factory is not None else None
 
         if (
             scheduler is not None
@@ -608,39 +483,35 @@ class Trainer:
         return scheduler
     
     def build_loss(self):
-        """Execute `build_loss`.
-
-        Args:
-            None.
-
-        Returns:
-            Any: Output produced by this function.
-        """
-        if self.config.loss_type == 'l1':
-            criterion = L1Loss()
-        elif self.config.loss_type == 'l2':
-            criterion = L2Loss()
-        elif self.config.loss_type == 'combined':
-            criterion = CombinedLoss(
+        """Build loss function theo config.loss_type."""
+        # Registry: add new loss types here — no other code needs to change.
+        _LOSS_REGISTRY = {
+            'l1':       lambda: L1Loss(),
+            'l2':       lambda: L2Loss(),
+            'combined': lambda: CombinedLoss(
                 lambda_l1=self.config.lambda_l1,
                 lambda_sam=self.config.lambda_sam,
-                lambda_ssim=self.config.lambda_ssim
+                lambda_ssim=self.config.lambda_ssim,
+            ),
+            'adaptive': lambda: AdaptiveCombinedLoss(),
+        }
+        factory = _LOSS_REGISTRY.get(self.config.loss_type)
+        if factory is None:
+            raise ValueError(
+                f"Unknown loss type '{self.config.loss_type}'. "
+                f"Known: {sorted(_LOSS_REGISTRY)}"
             )
-        elif self.config.loss_type == 'adaptive':
-            criterion = AdaptiveCombinedLoss()
-        else:
-            raise ValueError(f"Unknown loss type: {self.config.loss_type}")
-        
-        return criterion
+        return factory()
 
     def _get_two_phase_lambdas(self, epoch):
-        """Internal helper for `get_two_phase_lambdas` operations.
+        """Tính lambda_l1/sam/ssim và tên phase cho two-phase loss schedule.
 
         Args:
-            epoch: Input parameter `epoch`.
+            epoch: Epoch hiện tại (1-indexed).
 
         Returns:
-            Any: Output produced by this function.
+            tuple: (lambda_l1, lambda_sam, lambda_ssim, phase_name) trong đó
+                   phase_name là 'phase1', 'phase2', hoặc 'transition'.
         """
         target_l1 = float(self.config.lambda_l1)
         target_sam = float(self.config.lambda_sam)
@@ -669,19 +540,18 @@ class Trainer:
         return target_l1, sam, ssim, 'transition'
 
     def _apply_loss_schedule(self, epoch):
-        """Internal helper for `apply_loss_schedule` operations.
+        """Áp dụng two-phase loss schedule nếu được bật.
 
         Args:
-            epoch: Input parameter `epoch`.
+            epoch: Epoch hiện tại (1-indexed).
 
         Returns:
-            Any: Output produced by this function.
+            tuple: (scheduled, phase, lambda_l1, lambda_sam, lambda_ssim) —
+                   scheduled=False nếu loss không hỗ trợ set_weights hoặc chưa bật.
         """
-        if self.config.loss_type != 'combined':
+        if not hasattr(self.criterion, 'set_weights'):
             return False, 'static', None, None, None
         if not getattr(self.config, 'use_two_phase_loss', False):
-            return False, 'static', self.config.lambda_l1, self.config.lambda_sam, self.config.lambda_ssim
-        if not hasattr(self.criterion, 'set_weights'):
             return False, 'static', self.config.lambda_l1, self.config.lambda_sam, self.config.lambda_ssim
 
         l1, sam, ssim, phase = self._get_two_phase_lambdas(epoch)
@@ -689,68 +559,40 @@ class Trainer:
         return True, phase, l1, sam, ssim
 
     def compute_selection_score(self, metrics):
-        """Execute `compute_selection_score`.
+        """Tính selection score từ metrics dict theo config.best_selection_metric.
 
         Args:
-            metrics: Input parameter `metrics`.
+            metrics: Dict chứa PSNR, SSIM, SAM, ERGAS.
 
         Returns:
-            Any: Output produced by this function.
+            float: Scalar score — cao hơn là tốt hơn.
         """
         return compute_selection_score_from_config(metrics, self.config)
 
     def _is_early_stopping_enabled(self):
-        """Internal helper for `is_early_stopping_enabled` operations.
-
-        Args:
-            None.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Trả về True nếu early stopping được bật trong config."""
         return bool(getattr(self.config, 'use_early_stopping', False))
 
     def _early_stopping_patience(self):
-        """Internal helper for `early_stopping_patience` operations.
-
-        Args:
-            None.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Trả về số validations không cải thiện cho phép trước khi dừng."""
         return max(1, int(getattr(self.config, 'early_stopping_patience', 1)))
 
     def _early_stopping_start_epoch(self):
-        """Internal helper for `early_stopping_start_epoch` operations.
-
-        Args:
-            None.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Trả về epoch đầu tiên mà early stopping bắt đầu được áp dụng."""
         return max(0, int(getattr(self.config, 'early_stopping_start_epoch', 0)))
 
     def _early_stopping_min_delta(self):
-        """Internal helper for `early_stopping_min_delta` operations.
-
-        Args:
-            None.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Trả về ngưỡng cải thiện tối thiểu để reset bộ đếm early stopping."""
         return float(getattr(self.config, 'early_stopping_min_delta', 0.0))
     
     def train_epoch(self, epoch):
-        """Execute `train_epoch`.
+        """Chạy một epoch train với AMP và gradient clipping.
 
         Args:
-            epoch: Input parameter `epoch`.
+            epoch: Epoch hiện tại (1-indexed), dùng cho progress bar.
 
         Returns:
-            Any: Output produced by this function.
+            tuple: (avg_loss, train_time) — loss trung bình và thời gian epoch (giây).
         """
         epoch_start = time.time()
         self.model.train()
@@ -771,18 +613,15 @@ class Trainer:
             with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=self.use_amp):
                 sr = self.model(lr)
             
-                # Compute loss
-                if self.config.loss_type in ['combined', 'adaptive']:
-                    loss, loss_dict = self.criterion(sr, hr)
-                    if i % self.config.log_interval == 0:
-                        pbar.set_postfix({
-                            'loss': f"{loss_dict['total']:.4f}",
-                            'l1': f"{loss_dict['l1']:.4f}",
-                            'sam': f"{loss_dict['sam']:.4f}"
-                        })
-                else:
-                    loss = self.criterion(sr, hr)
-                    pbar.set_postfix({'loss': f"{loss.item():.4f}"})
+                # All loss functions return (loss, loss_dict) — unpack uniformly.
+                loss, loss_dict = self.criterion(sr, hr)
+                if i % self.config.log_interval == 0:
+                    postfix = {'loss': f"{loss_dict['total']:.4f}"}
+                    postfix.update({
+                        k: f"{v:.4f}" for k, v in loss_dict.items()
+                        if k != 'total' and isinstance(v, float)
+                    })
+                    pbar.set_postfix(postfix)
 
             if i == 0:
                 self._log_runtime_device_snapshot(lr, hr, sr, loss)
@@ -823,14 +662,7 @@ class Trainer:
         return avg_loss, train_time
     
     def validate(self):
-        """Execute `validate`.
-
-        Args:
-            None.
-
-        Returns:
-            Any: Output produced by this function.
-        """
+        """Đánh giá model trên val set với EMA weights (nếu có); trả về avg metrics."""
         if self.ema is not None:
             self.ema.apply_shadow(self.model)
         try:
@@ -878,16 +710,13 @@ class Trainer:
                 self.ema.restore(self.model)
     
     def save_checkpoint(self, epoch, metrics, is_best=False, selection_score=None):
-        """Execute `save_checkpoint`.
+        """Lưu checkpoint atomic vào latest.pth và (nếu is_best) best.pth.
 
         Args:
-            epoch: Input parameter `epoch`.
-            metrics: Input parameter `metrics`.
-            is_best: Input parameter `is_best`.
-            selection_score: Input parameter `selection_score`.
-
-        Returns:
-            None: This function returns no value.
+            epoch: Epoch hiện tại.
+            metrics: Dict metrics validation (PSNR, SSIM, SAM, ERGAS).
+            is_best: Nếu True, copy sang best.pth.
+            selection_score: Score đã tính sẵn; tính lại nếu None và is_best=True.
         """
         self._ensure_output_dirs()
         checkpoint = {
@@ -907,14 +736,18 @@ class Trainer:
         if self.ema is not None:
             checkpoint['ema_state_dict'] = self.ema.state_dict()
         
-        # Save latest checkpoint
+        def _atomic_save(obj, path):
+            """Write to .tmp then rename — prevents corrupt files on crash."""
+            tmp = path + '.tmp'
+            torch.save(obj, tmp)
+            os.replace(tmp, path)
+
         latest_path = os.path.join(self.config.checkpoint_dir, 'latest.pth')
-        torch.save(checkpoint, latest_path)
-        
-        # Save best checkpoint
+        _atomic_save(checkpoint, latest_path)
+
         if is_best:
             best_path = os.path.join(self.config.checkpoint_dir, 'best.pth')
-            torch.save(checkpoint, best_path)
+            _atomic_save(checkpoint, best_path)
             mode = str(getattr(self.config, 'best_selection_metric', 'psnr')).upper()
             if selection_score is None:
                 selection_score = self.compute_selection_score(metrics)
@@ -925,20 +758,16 @@ class Trainer:
                     f"💾 Best model saved! Score({mode}): {selection_score:.6f} | "
                     f"PSNR: {metrics['PSNR']:.2f} dB"
                 )
-        
-        # Save periodic checkpoints
+
         if epoch % self.config.save_checkpoint_every == 0:
             epoch_path = os.path.join(self.config.checkpoint_dir, f'epoch_{epoch}.pth')
-            torch.save(checkpoint, epoch_path)
+            _atomic_save(checkpoint, epoch_path)
     
     def load_checkpoint(self, checkpoint_path):
-        """Execute `load_checkpoint`.
+        """Khôi phục model, optimizer, scheduler và training state từ checkpoint.
 
         Args:
-            checkpoint_path: Input parameter `checkpoint_path`.
-
-        Returns:
-            None: This function returns no value.
+            checkpoint_path: Đường dẫn tới file .pth checkpoint.
         """
         # weights_only=False vì checkpoint chứa config object (Python dict/class).
         # Chỉ load từ nguồn đáng tin cậy.
@@ -973,14 +802,7 @@ class Trainer:
         self._log(f"Resumed from epoch {self.current_epoch}")
     
     def train(self):
-        """Execute `train`.
-
-        Args:
-            None.
-
-        Returns:
-            None: This function returns no value.
-        """
+        """Chạy toàn bộ training loop với validation, early stopping và checkpoint."""
         self._open_log_file()
         self._log("\n" + "="*70)
         self._log("Starting Training")
@@ -1111,15 +933,7 @@ class Trainer:
 
 
 def main():
-    # Parse arguments
-    """Execute the main entry-point workflow.
-
-    Args:
-        None.
-
-    Returns:
-        None: This function returns no value.
-    """
+    """Parse CLI args, build config, khởi tạo Trainer và bắt đầu training."""
     parser = argparse.ArgumentParser(description='Train Hyperspectral SR Model')
     parser.add_argument('--config', type=str, default='default',
                        help=(
@@ -1148,11 +962,8 @@ def main():
     if args.resume:
         config.resume = True
         config.resume_checkpoint = args.resume
-    
-    # Print configuration
-    config.print_config()
-    
-    # Create trainer and start training
+
+    # Create trainer and start training (Trainer.__init__ logs config to file + stdout)
     trainer = Trainer(config)
     try:
         trainer.train()

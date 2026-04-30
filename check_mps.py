@@ -32,6 +32,7 @@ def fail(msg): print(f"  ✗  {msg}")
 # ─── Checks ───────────────────────────────────────────────────────────────────
 
 def check_mps_available():
+    """Kiểm tra MPS available và built; trả về torch.device('mps') hoặc None."""
     section("1. MPS availability")
     if not torch.backends.mps.is_available():
         fail("MPS not available — bạn đang chạy trên máy không có Apple Silicon?")
@@ -47,6 +48,7 @@ def check_mps_available():
 
 
 def check_fallback_env():
+    """Kiểm tra biến môi trường PYTORCH_ENABLE_MPS_FALLBACK; trả về True nếu được set."""
     section("2. MPS fallback environment")
     import os
     val = os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK", "0")
@@ -62,6 +64,7 @@ def check_fallback_env():
 
 
 def check_ops(device):
+    """Chạy thử các ops quan trọng (LayerNorm, PixelShuffle, attention, v.v.); trả về True nếu tất cả pass."""
     section("3. Kiểm tra ops quan trọng cho model")
     results = {}
 
@@ -98,6 +101,7 @@ def check_ops(device):
 
 
 def check_backward(device):
+    """Kiểm tra backward pass cơ bản với conv proxy model; trả về True nếu thành công."""
     section("4. Backward pass (gradient flow)")
     try:
         x = torch.randn(1, 31, 64, 64, device=device, requires_grad=True)
@@ -117,6 +121,7 @@ def check_backward(device):
 
 
 def check_speed(device, bands=31, feature_dim=128, patch_size=64, n_iters=10):
+    """Benchmark tốc độ forward+backward với conv proxy; in ước tính thời gian/epoch."""
     section(f"5. Speed benchmark (bands={bands}, dim={feature_dim}, patch={patch_size})")
 
     try:
@@ -180,6 +185,7 @@ def check_speed(device, bands=31, feature_dim=128, patch_size=64, n_iters=10):
 
 
 def check_memory(device, bands=31, feature_dim=128, patch_size=64):
+    """Đo mức dùng MPS memory với conv proxy; trả về True nếu không OOM."""
     section(f"6. Memory usage (bands={bands}, dim={feature_dim}, patch={patch_size})")
     try:
         if hasattr(torch, 'mps') and hasattr(torch.mps, 'current_allocated_memory'):
@@ -222,6 +228,7 @@ def check_memory(device, bands=31, feature_dim=128, patch_size=64):
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
+    """Chạy toàn bộ MPS compatibility checks và in tóm tắt."""
     parser = argparse.ArgumentParser(description='MPS compatibility check cho HSI-SR training')
     parser.add_argument('--dataset', default='cave',
                         choices=['cave', 'harvard', 'chikusei', 'pavia'],

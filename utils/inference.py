@@ -1,21 +1,32 @@
-"""Inference helpers."""
+"""
+Inference helpers — sliding-window inference cho ảnh lớn.
+
+forward_chop chia LR input lớn thành patches có overlap, chạy model trên từng
+patch, rồi tổng hợp kết quả bằng weighted averaging để tránh block artifacts.
+
+QUAN TRỌNG:
+  - Cần thiết vì model không thể xử lý toàn ảnh lớn do GPU memory
+  - Vùng chồng lấp (overlap) được average thay vì chọn một bên → mượt hơn
+  - @torch.no_grad() — không cần gradient khi inference, tiết kiệm VRAM
+  - Dùng bởi test_full_image.py và evaluate.py
+"""
 
 import torch
 
 
 @torch.no_grad()
 def forward_chop(model, x, scale, patch_size=64, overlap=16):
-    """Execute `forward_chop`.
+    """Sliding-window SR inference — xử lý ảnh lớn theo từng patch có overlap.
 
     Args:
-        model: Input parameter `model`.
-        x: Input parameter `x`.
-        scale: Input parameter `scale`.
-        patch_size: Input parameter `patch_size`.
-        overlap: Input parameter `overlap`.
+        model: SR model nhận [B,C,H,W] và trả về [B,C,H*scale,W*scale].
+        x: LR input tensor [B, C, H, W].
+        scale: Upscale factor (ví dụ: 4).
+        patch_size: Kích thước patch LR tính bằng pixel (mặc định 64).
+        overlap: Số pixel overlap giữa các patches liền kề (mặc định 16).
 
     Returns:
-        Any: Output produced by this function.
+        torch.Tensor: SR output [B, C, H*scale, W*scale] — full image đã super-resolve.
     """
     b, c, h, w = x.size()
     patch_size = max(1, int(patch_size))
